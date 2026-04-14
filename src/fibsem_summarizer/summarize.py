@@ -33,8 +33,6 @@ performed on this dataset. This list is meant to be suitable for lifting directl
 the methods section of a paper, so it should cover things like:
 - imaging parameters (voxel size, FOV, beam conditions, if mentioned),
 - alignment/stitching approach and any parameters,
-- segmentation method, model(s), and training notes if any,
-- proofreading effort (who, how much, what tooling),
 - QC and review steps and their outcomes.
 
 Use concise, factual bullets. Prefer specific numbers, tool names, and commit/branch \
@@ -49,7 +47,7 @@ Organize as three short subsections:
 - **What went well** — parts of the process that were smooth, fast, or well-handed-off.
 - **Friction points** — places where the thread shows back-and-forth, unclear \
   ownership, delays, or reworks. Assembly ↔ Review oscillation is a normal QC loop; \
-  describe it only if it looped several times without progress.
+  describe it only if it looped several times without or only minor progress.
 - **Suggested improvements** — concrete, low-cost changes for future datasets, grounded \
   in what you actually saw in the thread.
 
@@ -84,7 +82,7 @@ A one- or two-sentence overall framing of the period.
 ## Needs attention this week
 
 A bullet list distilled across all datasets of items that genuinely need action before \
-the next meeting. Include the dataset title/number next to each bullet. Keep this list \
+the next meeting. Include the dataset title next to each bullet. Keep this list \
 short — only things that are actually blocked, stuck, or waiting on a specific person. \
 If nothing needs attention, write "- Nothing blocking." and move on.
 
