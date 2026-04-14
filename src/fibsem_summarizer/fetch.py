@@ -8,9 +8,6 @@ Incremental: on repeated runs we diff against the previous snapshot so that:
 
 All GitHub calls go through the GraphQL v4 API because Projects v2 has no REST endpoint.
 """
-
-from __future__ import annotations
-
 import hashlib
 import json
 import os

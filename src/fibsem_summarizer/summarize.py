@@ -9,9 +9,6 @@ Two outputs:
 This module is intentionally thin: it shells out to `claude -p` and writes files. The
 prompts live as module-level string constants below so they're easy to tweak in one place.
 """
-
-from __future__ import annotations
-
 import json
 import subprocess
 from pathlib import Path

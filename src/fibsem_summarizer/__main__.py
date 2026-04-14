@@ -3,9 +3,6 @@
 Default (no subcommand) runs the full pipeline: fetch → summarize.
 Subcommands are available for running individual stages or converting markdown to pptx.
 """
-
-from __future__ import annotations
-
 import os
 import sys
 from pathlib import Path

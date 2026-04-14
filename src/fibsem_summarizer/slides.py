@@ -9,9 +9,6 @@ Conventions (kept deliberately simple):
 
 The point is a deck you can open in PowerPoint/Keynote and tweak — not pixel-perfect output.
 """
-
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Iterable
 
