@@ -1,7 +1,7 @@
 [project]
 name = "fibsem-summarizer"
 version = "0.1.0"
-description = "Fetch FIB-SEM dataset issues from a GitHub Projects v2 board and summarize them with claude -p."
+description = "Fetch FIB-SEM dataset reconstruction status from a GitHub project and summarize them with Claude."
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",

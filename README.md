@@ -1,16 +1,11 @@
 # FIBSEM Project Summarizer
 
-Fetches discussion threads from the FIB-SEM reconstruction tracking board
-(a private GitHub Projects v2 board) into local JSON snapshots, then asks
-`claude -p` to turn those snapshots into Markdown summaries:
+Fetches discussion threads from the FIB-SEM reconstruction tracking board (a private GitHub Projects v2 board) into local JSON snapshots, then asks `claude -p` to turn those snapshots into Markdown summaries:
 
-- a **per-dataset cumulative** document covering reconstruction steps (methods-ready)
-  and an internal process retrospective, and
-- a **single aggregated biweekly status report** for the internal meeting, covering
-  activity since the previous pull.
+- a **per-dataset cumulative** document covering reconstruction steps (methods-ready) and an internal process retrospective, and
+- a **single aggregated biweekly status report** for the internal meeting, covering activity since the previous pull.
 
-Pulls are incremental: re-running only fetches what changed, and edits to previously
-seen comments are tracked in the snapshot.
+Pulls are incremental: re-running only fetches what changed, and edits to previously seen comments are tracked in the snapshot.
 
 ## Setup
 
@@ -24,8 +19,7 @@ uv sync
 
 ### 2. Obtain a GitHub Personal Access Token
 
-The project board is private, so you need a token with read access to issues and to
-Projects v2.
+The project board is private, so you need a token with read access to issues and to Projects v2.
 
 1. Go to <https://github.com/settings/tokens> → **Tokens (classic)** → **Generate new token (classic)**.
 2. Name it e.g. `fibsem-summarizer` and pick an expiration.
@@ -52,8 +46,7 @@ The summarizer shells out to the Claude Code CLI. Verify:
 claude --version
 ```
 
-No separate Anthropic API key is handled by this tool — `claude -p` uses your
-existing Claude Code authentication.
+No separate Anthropic API key is handled by this tool — `claude -p` uses your existing Claude Code authentication.
 
 ## Usage
 
@@ -63,9 +56,9 @@ existing Claude Code authentication.
 uv run -m fibsem_summarizer
 ```
 
-This runs `fetch` and then `summarize`, writing:
+This runs `fetch` and then `summarize`, writing (all gitignored):
 
-- `data/<repo>__<num>.json` — raw snapshots (gitignored).
+- `data/<repo>__<num>.json` — raw snapshots.
 - `out/cumulative/<repo>__<num>.md` — per-dataset methods + retrospective.
 - `out/biweekly.md` — single aggregated status report.
 
@@ -83,16 +76,11 @@ uv run -m fibsem_summarizer slides out/biweekly.md
 # writes out/biweekly.pptx
 ```
 
-Slide layout: each `##` heading becomes a new slide; bullets and paragraphs under
-it populate the body. Open the resulting `.pptx` in PowerPoint or Keynote for any
-cosmetic tweaks.
+Slide layout: each `##` heading becomes a new slide; bullets and paragraphs under it populate the body. Open the resulting `.pptx` in PowerPoint or Keynote for any cosmetic tweaks.
 
 ## What gets fetched
 
-The tool walks every item on the board and keeps any issue whose column is one of
-**Imaging**, **Assembly**, or **Review**. It additionally keeps issues that just
-transitioned into or out of **Done** since the previous pull (so those moves show
-up in the biweekly report). Issues in **Cleaned Up** are ignored.
+The tool walks every item on the board and keeps any issue whose column is one of **Imaging**, **Assembly**, or **Review**. It additionally keeps issues that just transitioned into or out of **Done** since the previous pull (so those moves show up in the biweekly report). Issues in **Cleaned Up** are ignored.
 
 ## Snapshot shape (for reference)
 
@@ -118,8 +106,7 @@ Each `data/*.json` looks roughly like:
 
 ## Overriding the board
 
-By default the tool targets `JaneliaSciComp/projects/9`. Override with env vars
-(e.g., in `.env`):
+By default the tool targets `JaneliaSciComp/projects/9`. Override with env vars (e.g., in `.env`):
 
 ```
 FIBSEM_ORG=SomeOtherOrg
@@ -128,6 +115,4 @@ FIBSEM_PROJECT_NUMBER=12
 
 ## Tuning the prompts
 
-Both prompts are module-level constants near the top of
-`src/fibsem_summarizer/summarize.py` (`CUMULATIVE_PROMPT` and `BIWEEKLY_PROMPT`).
-Edit in place — there's no separate config layer.
+Both prompts are module-level constants near the top of `src/fibsem_summarizer/summarize.py` (`CUMULATIVE_PROMPT` and `BIWEEKLY_PROMPT`). Just edit them.
