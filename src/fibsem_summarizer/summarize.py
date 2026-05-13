@@ -41,6 +41,19 @@ references when they appear in the thread. Omit interpersonal chatter. If a step
 mentioned only vaguely, keep the bullet but mark the uncertainty (e.g. "exact parameters \
 not recorded in thread").
 
+**Standard steps to check for explicitly.** The following are operations the team \
+sometimes performs on a dataset; scan the thread for each and, if it was done, list it \
+under Reconstruction Steps with the relevant parameters / scope:
+- **Layer patching** — replacement of damaged, missing, charging, or otherwise unusable \
+  layers (note which layers and for what reason).
+- **Matching / registration parameter tuning** — changes to the resolution at which \
+  matches are computed, regularization weights, error tolerances or similar knobs \
+  (note the old → new value when possible).
+
+If a standard step was clearly *not* performed (e.g. no layer patching was needed), do \
+not list it — the absence is not informative. Only call out an item if the thread \
+mentions it being done or explicitly considered and skipped.
+
 ## Process Retrospective
 
 An internal-facing retrospective aimed at improving the reconstruction workflow. \
