@@ -49,6 +49,10 @@ under Reconstruction Steps with the relevant parameters / scope:
 - **Matching / registration parameter tuning** — changes to the resolution at which \
   matches are computed, regularization weights, error tolerances or similar knobs \
   (note the old → new value when possible).
+- **Streak correction** - application of a manually inferred filter to reduce streak artifacts \
+  in the raw data (note who did it).
+- **Shading correction** - application of a manually inferred filter to reduce shading artifacts \
+  in the raw data (note who did it).
 
 If a standard step was clearly *not* performed (e.g. no layer patching was needed), do \
 not list it — the absence is not informative. Only call out an item if the thread \
