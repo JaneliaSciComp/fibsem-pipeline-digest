@@ -12,7 +12,7 @@ import click
 from dotenv import load_dotenv
 
 from .fetch import GitHubError, fetch_all
-from .slides import markdown_to_pptx
+from .slides import markdown_to_pdf
 from .summarize import summarize_biweekly, summarize_dataset
 
 
@@ -115,12 +115,12 @@ def summarize(data_dir: Path, out_dir: Path) -> None:
     "--output",
     type=click.Path(path_type=Path),
     default=None,
-    help="Output .pptx path. Defaults to <markdown>.pptx next to the input.",
+    help="Output .pdf path. Defaults to <markdown>.pdf next to the input.",
 )
-def slides(markdown: Path, output: Path | None) -> None:
-    """Convert a markdown file (e.g. out/biweekly.md) to a .pptx deck."""
-    out_path = output if output is not None else markdown.with_suffix(".pptx")
-    markdown_to_pptx(markdown, out_path)
+def pdf(markdown: Path, output: Path | None) -> None:
+    """Render a markdown file (e.g. out/biweekly.md) to a styled PDF."""
+    out_path = output if output is not None else markdown.with_suffix(".pdf")
+    markdown_to_pdf(markdown, out_path)
     click.echo(f"Wrote {out_path}")
 
 
