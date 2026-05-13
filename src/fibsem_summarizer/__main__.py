@@ -5,6 +5,7 @@ Subcommands are available for running individual stages or converting markdown t
 """
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -82,22 +83,29 @@ def fetch(data_dir: Path) -> None:
     show_default=True,
 )
 def summarize(data_dir: Path, out_dir: Path) -> None:
-    """Run claude -p to produce per-dataset and aggregated markdown summaries."""
+    """Run claude -p to produce per-dataset and aggregated markdown summaries.
+
+    Each run writes into a fresh timestamped subdirectory of `out/` so prior runs are
+    preserved untouched. All markdown files (per-dataset cumulative reports plus the
+    aggregated biweekly report) sit flat in that directory.
+    """
     snapshots = sorted(data_dir.glob("*.json"))
     if not snapshots:
         click.echo(f"No snapshots in {data_dir}/. Run `fetch` first.", err=True)
         sys.exit(1)
 
-    cumulative_dir = out_dir / "cumulative"
-    click.echo(f"Summarizing {len(snapshots)} dataset(s) via claude -p...")
-    for snap in snapshots:
-        click.echo(f"  {snap.name} -> cumulative")
-        summarize_dataset(snap, cumulative_dir)
+    run_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    biweekly_path = out_dir / "biweekly.md"
+    click.echo(f"Summarizing {len(snapshots)} dataset(s) via claude -p into {run_dir}/")
+    for snap in snapshots:
+        written = summarize_dataset(snap, run_dir)
+        click.echo(f"  {snap.name} -> {written.name}")
+
+    biweekly_path = run_dir / "biweekly.md"
     click.echo("  aggregating biweekly report")
     summarize_biweekly(snapshots, biweekly_path)
-    click.echo(f"Wrote summaries under {out_dir}/.")
+    click.echo(f"Wrote summaries under {run_dir}/.")
 
 
 @cli.command()

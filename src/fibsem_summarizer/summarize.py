@@ -10,6 +10,7 @@ This module is intentionally thin: it shells out to `claude -p` and writes files
 prompts live as module-level string constants below so they're easy to tweak in one place.
 """
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -143,12 +144,28 @@ def _run_claude(prompt: str, stdin_payload: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _filename_for(snapshot: dict[str, Any]) -> str:
+    """Derive `<issue_number>_<dataset_title>.md` from a snapshot dict.
+
+    The title is sanitized for filesystem safety: whitespace and any character outside
+    `[A-Za-z0-9._-]` collapses to a single `-`.
+    """
+    issue = snapshot["issue"]
+    number = issue["number"]
+    title = (issue.get("title") or "untitled").strip()
+    safe_title = _UNSAFE_FILENAME_CHARS.sub("-", title).strip("-") or "untitled"
+    return f"{number}_{safe_title}.md"
+
+
 def summarize_dataset(snapshot_path: Path, out_dir: Path) -> Path:
     """Produce the per-dataset cumulative summary for one snapshot JSON file."""
-    snapshot = snapshot_path.read_text(encoding="utf-8")
-    md = _run_claude(CUMULATIVE_PROMPT, snapshot)
+    snapshot_text = snapshot_path.read_text(encoding="utf-8")
+    md = _run_claude(CUMULATIVE_PROMPT, snapshot_text)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / (snapshot_path.stem + ".md")
+    out_path = out_dir / _filename_for(json.loads(snapshot_text))
     out_path.write_text(md, encoding="utf-8")
     return out_path
 

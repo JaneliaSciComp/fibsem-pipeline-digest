@@ -58,9 +58,12 @@ uv run -m fibsem_summarizer
 
 This runs `fetch` and then `summarize`, writing (all gitignored):
 
-- `data/<repo>__<num>.json` — raw snapshots.
-- `out/cumulative/<repo>__<num>.md` — per-dataset methods + retrospective.
-- `out/biweekly.md` — single aggregated status report.
+- `data/<repo>__<num>.json` — raw snapshots (one per dataset, updated in place).
+- `out/<YYYY-MM-DD_HH-MM-SS>/<num>_<title>.md` — per-dataset methods + retrospective.
+- `out/<YYYY-MM-DD_HH-MM-SS>/biweekly.md` — single aggregated status report.
+
+Each summarize run creates a fresh timestamped directory under `out/`, so prior runs
+are preserved untouched. All Markdown files for a run sit flat in that directory.
 
 ### Stage-by-stage
 
@@ -72,8 +75,8 @@ uv run -m fibsem_summarizer summarize     # produce Markdown from existing snaps
 ### Convert a summary to slides
 
 ```sh
-uv run -m fibsem_summarizer slides out/biweekly.md
-# writes out/biweekly.pptx
+uv run -m fibsem_summarizer slides out/2026-04-14_15-30-22/biweekly.md
+# writes out/2026-04-14_15-30-22/biweekly.pptx next to the input
 ```
 
 Slide layout: each `##` heading becomes a new slide; bullets and paragraphs under it populate the body. Open the resulting `.pptx` in PowerPoint or Keynote for any cosmetic tweaks.
