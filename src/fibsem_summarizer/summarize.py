@@ -108,6 +108,10 @@ If nothing needs attention, write "- Nothing blocking." and move on.
 
 For each dataset (heading `### <repo>#<number> — <title>` with the issue URL as a link), \
 write:
+- **Owner:** formatted as `<owner> (<collaborator>)`. The owner is parsed from an \
+  `owner: ...` line in the initial issue body. The collaborator is whichever of \
+  `Cellmap`, `FuncEWOrm`, or `eFIB-SEM SR` appears in the issue labels. If either is \
+  missing, write `unknown` in its place.
 - **Status:** current column. If a transition happened in the window, show it like \
   `Assembly → Review (on 2026-03-20)`.
 - **Progress:** 2-5 bullets of what actually advanced in the window — new imaging data, \
