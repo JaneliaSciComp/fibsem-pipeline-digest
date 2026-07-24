@@ -9,6 +9,7 @@ Two outputs:
 This module is intentionally thin: it shells out to `claude -p` and writes files. The
 prompts live as module-level string constants below so they're easy to tweak in one place.
 """
+import hashlib
 import json
 import re
 import subprocess
@@ -179,6 +180,53 @@ def _filename_for(snapshot: dict[str, Any]) -> str:
     title = (issue.get("title") or "untitled").strip()
     safe_title = _UNSAFE_FILENAME_CHARS.sub("-", title).strip("-") or "untitled"
     return f"{number}_{safe_title}.md"
+
+
+# --------------------------------------------------------------------------- #
+# Skip datasets unchanged since the last summarize run
+# --------------------------------------------------------------------------- #
+
+STATE_FILENAME = ".summarize_state.json"
+
+
+def _fingerprint(snapshot: dict[str, Any]) -> str:
+    """Hash the substantive parts of a snapshot (everything but the pull timestamps,
+    which change on every fetch regardless of whether anything actually happened)."""
+    substantive = {
+        k: v for k, v in snapshot.items() if k not in ("last_pull_at", "previous_last_pull_at")
+    }
+    payload = json.dumps(substantive, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_state(data_dir: Path) -> dict[str, str]:
+    path = data_dir / STATE_FILENAME
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def changed_since_last_summary(snapshot_paths: list[Path], data_dir: Path) -> list[Path]:
+    """Return the subset of snapshot_paths whose content changed since they were last
+    summarized (or that have never been summarized before)."""
+    state = _load_state(data_dir)
+    changed = []
+    for path in snapshot_paths:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        if state.get(path.stem) != _fingerprint(snapshot):
+            changed.append(path)
+    return changed
+
+
+def record_summarized(snapshot_paths: list[Path], data_dir: Path) -> None:
+    """Record the current fingerprint of each snapshot as "summarized" so a future run
+    can skip it if nothing changes."""
+    state = _load_state(data_dir)
+    for path in snapshot_paths:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        state[path.stem] = _fingerprint(snapshot)
+    state_path = data_dir / STATE_FILENAME
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def summarize_dataset(snapshot_path: Path, out_dir: Path) -> Path:

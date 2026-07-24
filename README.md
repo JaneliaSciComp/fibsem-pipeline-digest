@@ -65,6 +65,13 @@ This runs `fetch` and then `summarize`, writing (all gitignored):
 Each summarize run creates a fresh timestamped directory under `out/`, so prior runs
 are preserved untouched. All Markdown files for a run sit flat in that directory.
 
+Datasets whose snapshot hasn't changed since they were last summarized (no new
+comments, status transitions, or body edits) are skipped — tracked via
+`data/.summarize_state.json`. In particular, once a dataset reaches **Done** it's
+picked up once (for the report covering the period it transitioned in) and then
+naturally drops out of future runs, since `fetch` stops updating it and its snapshot
+stays unchanged.
+
 ### Stage-by-stage
 
 ```sh

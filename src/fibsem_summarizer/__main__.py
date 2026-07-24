@@ -13,7 +13,13 @@ from dotenv import load_dotenv
 
 from .fetch import GitHubError, fetch_all
 from .slides import markdown_to_pdf
-from .summarize import summarize_biweekly, summarize_dataset
+from .summarize import (
+    STATE_FILENAME,
+    changed_since_last_summary,
+    record_summarized,
+    summarize_biweekly,
+    summarize_dataset,
+)
 
 
 # Repo-root-relative output locations. The CLI is invoked from the project
@@ -89,22 +95,33 @@ def summarize(data_dir: Path, out_dir: Path) -> None:
     preserved untouched. All markdown files (per-dataset cumulative reports plus the
     aggregated biweekly report) sit flat in that directory.
     """
-    snapshots = sorted(data_dir.glob("*.json"))
+    snapshots = sorted(
+        p for p in data_dir.glob("*.json") if p.name != STATE_FILENAME
+    )
     if not snapshots:
         click.echo(f"No snapshots in {data_dir}/. Run `fetch` first.", err=True)
         sys.exit(1)
 
+    to_process = changed_since_last_summary(snapshots, data_dir)
+    skipped = len(snapshots) - len(to_process)
+    if skipped:
+        click.echo(f"Skipping {skipped} dataset(s) untouched since the last summary.")
+    if not to_process:
+        click.echo("Nothing new to summarize.")
+        return
+
     run_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    click.echo(f"Summarizing {len(snapshots)} dataset(s) via claude -p into {run_dir}/")
-    for snap in snapshots:
+    click.echo(f"Summarizing {len(to_process)} dataset(s) via claude -p into {run_dir}/")
+    for snap in to_process:
         written = summarize_dataset(snap, run_dir)
         click.echo(f"  {snap.name} -> {written.name}")
 
     biweekly_path = run_dir / "biweekly.md"
     click.echo("  aggregating biweekly report")
-    summarize_biweekly(snapshots, biweekly_path)
+    summarize_biweekly(to_process, biweekly_path)
+    record_summarized(to_process, data_dir)
     click.echo(f"Wrote summaries under {run_dir}/.")
 
 
