@@ -22,7 +22,7 @@ GITHUB_GRAPHQL = "https://api.github.com/graphql"
 
 # Columns we care about for reporting. Items in other columns are skipped unless
 # they transitioned recently (see CollectedItem.is_recent_done).
-ACTIVE_STATUSES: set[str] = {"Imaging", "Assembly", "Review"}
+ACTIVE_STATUSES: set[str] = {"Imaging", "Assembly", "Review", "Advanced Processing"}
 
 
 class GitHubError(RuntimeError):

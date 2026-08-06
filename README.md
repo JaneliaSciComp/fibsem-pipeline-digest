@@ -90,7 +90,7 @@ Slide layout: each `##` heading becomes a new slide; bullets and paragraphs unde
 
 ## What gets fetched
 
-The tool walks every item on the board and keeps any issue whose column is one of **Imaging**, **Assembly**, or **Review**. It additionally keeps issues that just transitioned into or out of **Done** since the previous pull (so those moves show up in the biweekly report). Issues in **Cleaned Up** are ignored.
+The tool walks every item on the board and keeps any issue whose column is one of **Imaging**, **Assembly**, **Review**, or **Advanced Processing** (exploratory R&D outside the normal pipeline — reported like the others, but not flagged as needing attention just for being quiet). It additionally keeps issues that just transitioned into or out of **Done** since the previous pull (so those moves show up in the biweekly report). Issues in **Cleaned Up** are ignored.
 
 ## Snapshot shape (for reference)
 

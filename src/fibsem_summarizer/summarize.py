@@ -81,7 +81,8 @@ You are preparing a status report for an internal biweekly meeting about FIB-SEM
 reconstruction. You are given, on stdin, a JSON array where each element is one dataset's \
 snapshot. Each snapshot contains:
 - `issue` (title, repository, URL, labels, assignees, current body),
-- `current_status` (which column the dataset is in: Imaging / Assembly / Review / Done),
+- `current_status` (which column the dataset is in: Imaging / Assembly / Review / \
+Advanced Processing / Done),
 - `status_history` (all column transitions observed),
 - `comments` (every comment, with author, createdAt, updatedAt, body),
 - `edits` (comments that were edited since we last pulled),
@@ -130,6 +131,11 @@ write:
   (b) it has been sitting in Review with an unanswered question for more than a week.
 - A single Review → Assembly move with the assignee actively working through comments \
   is healthy; note it under Progress, not Needs attention.
+- **Advanced Processing** is exploratory R&D that sits outside the normal reconstruction \
+  pipeline. Cover those datasets under "Per-dataset updates" exactly like Assembly/Review \
+  ones, but treat them as lower urgency: only list one in "Needs attention this week" if \
+  it is explicitly waiting on a decision or a specific person, never merely for being \
+  slow or quiet.
 
 Output only the Markdown. No JSON, no commentary outside the sections.
 """
