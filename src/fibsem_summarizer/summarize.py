@@ -13,6 +13,8 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -146,25 +148,47 @@ Output only the Markdown. No JSON, no commentary outside the sections.
 # --------------------------------------------------------------------------- #
 
 
+MAX_ATTEMPTS = 3
+BACKOFF_SECONDS = 10
+
+
 def _run_claude(prompt: str, stdin_payload: str) -> str:
-    """Invoke `claude -p <prompt>` with the JSON payload on stdin. Return stdout."""
-    try:
-        result = subprocess.run(
-            ["claude", "-p", prompt],
-            input=stdin_payload,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except FileNotFoundError as e:
-        raise RuntimeError(
-            "`claude` CLI not found on PATH. Install Claude Code first."
-        ) from e
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(
-            f"claude -p failed (exit {e.returncode}): {e.stderr[:500]}"
-        ) from e
-    return result.stdout
+    """Invoke `claude -p <prompt>` with the JSON payload on stdin. Return stdout.
+
+    Retries on nonzero exit with linear backoff: `claude -p` fails transiently on API
+    overload and rate limits. A missing binary is not transient, so it is not retried.
+    """
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                ["claude", "-p", prompt],
+                input=stdin_payload,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "`claude` CLI not found on PATH. Install Claude Code first."
+            ) from e
+        except subprocess.CalledProcessError as e:
+            # claude -p reports API/auth/rate-limit errors on stdout, not stderr.
+            detail = ((e.stderr or "") + (e.stdout or ""))[:500] or "<no output>"
+            if attempt == MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"claude -p failed after {MAX_ATTEMPTS} attempts "
+                    f"(exit {e.returncode}): {detail}"
+                ) from e
+            delay = BACKOFF_SECONDS * attempt
+            print(
+                f"    claude -p failed (exit {e.returncode}): {detail}\n"
+                f"    retrying in {delay}s ({attempt}/{MAX_ATTEMPTS - 1})",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        else:
+            return result.stdout
+    raise AssertionError("unreachable")  # loop either returns or raises
 
 
 # --------------------------------------------------------------------------- #
@@ -224,6 +248,11 @@ def changed_since_last_summary(snapshot_paths: list[Path], data_dir: Path) -> li
     return changed
 
 
+def _write_state(state: dict[str, str], data_dir: Path) -> None:
+    path = data_dir / STATE_FILENAME
+    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def record_summarized(snapshot_paths: list[Path], data_dir: Path) -> None:
     """Record the current fingerprint of each snapshot as "summarized" so a future run
     can skip it if nothing changes."""
@@ -231,8 +260,20 @@ def record_summarized(snapshot_paths: list[Path], data_dir: Path) -> None:
     for path in snapshot_paths:
         snapshot = json.loads(path.read_text(encoding="utf-8"))
         state[path.stem] = _fingerprint(snapshot)
-    state_path = data_dir / STATE_FILENAME
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    _write_state(state, data_dir)
+
+
+def forget_summarized(snapshot_paths: list[Path], data_dir: Path) -> None:
+    """Drop these snapshots back to "not summarized" so the next run redoes them.
+
+    Used when a later stage of the run fails: without this, the per-dataset summaries
+    are marked done and a re-run would report "nothing new" while the aggregated
+    report is still missing.
+    """
+    state = _load_state(data_dir)
+    for path in snapshot_paths:
+        state.pop(path.stem, None)
+    _write_state(state, data_dir)
 
 
 def summarize_dataset(snapshot_path: Path, out_dir: Path) -> Path:

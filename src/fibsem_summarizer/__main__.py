@@ -16,6 +16,7 @@ from .slides import markdown_to_pdf
 from .summarize import (
     STATE_FILENAME,
     changed_since_last_summary,
+    forget_summarized,
     record_summarized,
     summarize_biweekly,
     summarize_dataset,
@@ -114,15 +115,46 @@ def summarize(data_dir: Path, out_dir: Path) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     click.echo(f"Summarizing {len(to_process)} dataset(s) via claude -p into {run_dir}/")
+    done: list[Path] = []
+    failed: list[Path] = []
     for snap in to_process:
-        written = summarize_dataset(snap, run_dir)
+        try:
+            written = summarize_dataset(snap, run_dir)
+        except RuntimeError as e:
+            click.echo(f"  {snap.name} FAILED: {e}", err=True)
+            failed.append(snap)
+            continue
+        # Record immediately so a re-run after a later failure skips this dataset.
+        record_summarized([snap], data_dir)
+        done.append(snap)
         click.echo(f"  {snap.name} -> {written.name}")
+
+    if not done:
+        click.echo("All datasets failed; no biweekly report written.", err=True)
+        sys.exit(1)
 
     biweekly_path = run_dir / "biweekly.md"
     click.echo("  aggregating biweekly report")
-    summarize_biweekly(to_process, biweekly_path)
-    record_summarized(to_process, data_dir)
+    try:
+        summarize_biweekly(done, biweekly_path)
+    except RuntimeError as e:
+        forget_summarized(done, data_dir)
+        click.echo(f"  biweekly report FAILED: {e}", err=True)
+        click.echo(
+            f"Per-dataset summaries are in {run_dir}/. Re-run to rebuild the "
+            "biweekly report.",
+            err=True,
+        )
+        sys.exit(1)
+
     click.echo(f"Wrote summaries under {run_dir}/.")
+    if failed:
+        click.echo(
+            f"{len(failed)} dataset(s) failed and were left unrecorded; re-run to "
+            "retry just those. This biweekly report covers only the successful ones.",
+            err=True,
+        )
+        sys.exit(1)
 
 
 @cli.command()
@@ -142,4 +174,11 @@ def pdf(markdown: Path, output: Path | None) -> None:
 
 
 if __name__ == "__main__":
-    cli()
+    try:
+        cli()
+    except KeyboardInterrupt:
+        click.echo("\nInterrupted. Re-run to resume from where this left off.", err=True)
+        sys.exit(130)
+    except Exception as e:  # noqa: BLE001 - top-level guard: report, don't traceback
+        click.echo(f"ERROR: {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
