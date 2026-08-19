@@ -263,17 +263,45 @@ def record_summarized(snapshot_paths: list[Path], data_dir: Path) -> None:
     _write_state(state, data_dir)
 
 
-def forget_summarized(snapshot_paths: list[Path], data_dir: Path) -> None:
-    """Drop these snapshots back to "not summarized" so the next run redoes them.
+# --------------------------------------------------------------------------- #
+# Pending-run marker: lets an interrupted run resume into the same output dir
+# --------------------------------------------------------------------------- #
 
-    Used when a later stage of the run fails: without this, the per-dataset summaries
-    are marked done and a re-run would report "nothing new" while the aggregated
-    report is still missing.
-    """
-    state = _load_state(data_dir)
-    for path in snapshot_paths:
-        state.pop(path.stem, None)
-    _write_state(state, data_dir)
+PENDING_RUN_FILENAME = ".summarize_run.json"
+
+#: Bookkeeping files that live in data_dir alongside the snapshots.
+INTERNAL_FILES = frozenset({STATE_FILENAME, PENDING_RUN_FILENAME})
+
+
+def load_pending_run(data_dir: Path) -> tuple[Path, list[Path]] | None:
+    """Return (run_dir, cycle_snapshots) of an unfinished run, or None if the last
+    run completed. Snapshots that have since disappeared are dropped."""
+    path = data_dir / PENDING_RUN_FILENAME
+    if not path.exists():
+        return None
+    pending = json.loads(path.read_text(encoding="utf-8"))
+    cycle = [data_dir / name for name in pending["cycle"]]
+    return Path(pending["run_dir"]), [p for p in cycle if p.exists()]
+
+
+def save_pending_run(data_dir: Path, run_dir: Path, cycle: list[Path]) -> None:
+    """Mark a run as in-progress, remembering every snapshot in its reporting cycle."""
+    payload = {"run_dir": str(run_dir), "cycle": sorted(p.name for p in cycle)}
+    (data_dir / PENDING_RUN_FILENAME).write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+
+
+def clear_pending_run(data_dir: Path) -> None:
+    """Mark the current cycle finished; the next run starts a fresh output dir."""
+    (data_dir / PENDING_RUN_FILENAME).unlink(missing_ok=True)
+
+
+def output_path_for(snapshot_path: Path, out_dir: Path) -> Path:
+    """Where `summarize_dataset` writes this snapshot's summary. Its existence is the
+    done-marker used to decide what a resumed run still has to do."""
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    return out_dir / _filename_for(snapshot)
 
 
 def summarize_dataset(snapshot_path: Path, out_dir: Path) -> Path:

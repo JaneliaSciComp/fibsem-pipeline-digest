@@ -14,10 +14,13 @@ from dotenv import load_dotenv
 from .fetch import GitHubError, fetch_all
 from .slides import markdown_to_pdf
 from .summarize import (
-    STATE_FILENAME,
+    INTERNAL_FILES,
     changed_since_last_summary,
-    forget_summarized,
+    clear_pending_run,
+    load_pending_run,
+    output_path_for,
     record_summarized,
+    save_pending_run,
     summarize_biweekly,
     summarize_dataset,
 )
@@ -92,12 +95,16 @@ def fetch(data_dir: Path) -> None:
 def summarize(data_dir: Path, out_dir: Path) -> None:
     """Run claude -p to produce per-dataset and aggregated markdown summaries.
 
-    Each run writes into a fresh timestamped subdirectory of `out/` so prior runs are
-    preserved untouched. All markdown files (per-dataset cumulative reports plus the
-    aggregated biweekly report) sit flat in that directory.
+    Each reporting cycle writes into a fresh timestamped subdirectory of `out/` so prior
+    cycles are preserved untouched. All markdown files (per-dataset cumulative reports
+    plus the aggregated biweekly report) sit flat in that directory.
+
+    If a previous run left datasets unsummarized, re-running resumes into that same
+    directory: only the missing per-dataset summaries are generated, and the biweekly
+    report is rewritten to cover the whole cycle, not just the retried datasets.
     """
     snapshots = sorted(
-        p for p in data_dir.glob("*.json") if p.name != STATE_FILENAME
+        p for p in data_dir.glob("*.json") if p.name not in INTERNAL_FILES
     )
     if not snapshots:
         click.echo(f"No snapshots in {data_dir}/. Run `fetch` first.", err=True)
@@ -107,54 +114,64 @@ def summarize(data_dir: Path, out_dir: Path) -> None:
     skipped = len(snapshots) - len(to_process)
     if skipped:
         click.echo(f"Skipping {skipped} dataset(s) untouched since the last summary.")
-    if not to_process:
-        click.echo("Nothing new to summarize.")
-        return
 
-    run_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    pending = load_pending_run(data_dir)
+    if pending is not None:
+        # Resume the unfinished cycle, folding in anything that changed since.
+        run_dir, cycle = pending
+        known = {p.name for p in cycle}
+        cycle = cycle + [p for p in to_process if p.name not in known]
+        click.echo(f"Resuming unfinished run in {run_dir}/ ({len(cycle)} in cycle).")
+    else:
+        if not to_process:
+            click.echo("Nothing new to summarize.")
+            return
+        run_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        cycle = to_process
+
     run_dir.mkdir(parents=True, exist_ok=True)
+    save_pending_run(data_dir, run_dir, cycle)
 
-    click.echo(f"Summarizing {len(to_process)} dataset(s) via claude -p into {run_dir}/")
-    done: list[Path] = []
+    # An existing output file is the done-marker, so a resumed run redoes only the gaps
+    # (and regenerates anything whose .md was deleted by hand).
+    todo = [p for p in cycle if not output_path_for(p, run_dir).exists()]
     failed: list[Path] = []
-    for snap in to_process:
+    if todo:
+        click.echo(f"Summarizing {len(todo)} dataset(s) via claude -p into {run_dir}/")
+    for snap in todo:
         try:
             written = summarize_dataset(snap, run_dir)
         except RuntimeError as e:
             click.echo(f"  {snap.name} FAILED: {e}", err=True)
             failed.append(snap)
             continue
-        # Record immediately so a re-run after a later failure skips this dataset.
         record_summarized([snap], data_dir)
-        done.append(snap)
         click.echo(f"  {snap.name} -> {written.name}")
 
-    if not done:
-        click.echo("All datasets failed; no biweekly report written.", err=True)
+    available = [p for p in cycle if output_path_for(p, run_dir).exists()]
+    if not available:
+        click.echo("No datasets summarized; no biweekly report written.", err=True)
         sys.exit(1)
 
     biweekly_path = run_dir / "biweekly.md"
-    click.echo("  aggregating biweekly report")
+    click.echo(f"  aggregating biweekly report over {len(available)} dataset(s)")
     try:
-        summarize_biweekly(done, biweekly_path)
+        summarize_biweekly(available, biweekly_path)
     except RuntimeError as e:
-        forget_summarized(done, data_dir)
         click.echo(f"  biweekly report FAILED: {e}", err=True)
-        click.echo(
-            f"Per-dataset summaries are in {run_dir}/. Re-run to rebuild the "
-            "biweekly report.",
-            err=True,
-        )
+        click.echo("Re-run to rebuild it; per-dataset summaries are kept.", err=True)
         sys.exit(1)
 
     click.echo(f"Wrote summaries under {run_dir}/.")
     if failed:
         click.echo(
-            f"{len(failed)} dataset(s) failed and were left unrecorded; re-run to "
-            "retry just those. This biweekly report covers only the successful ones.",
+            f"{len(failed)} dataset(s) still failing; re-run to retry just those and "
+            "refresh the biweekly report over the full cycle.",
             err=True,
         )
         sys.exit(1)
+
+    clear_pending_run(data_dir)
 
 
 @cli.command()
