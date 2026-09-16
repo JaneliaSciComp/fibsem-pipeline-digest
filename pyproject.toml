@@ -1,5 +1,5 @@
 [project]
-name = "fibsem-summarizer"
+name = "fibsem-digest"
 version = "0.1.0"
 description = "Fetch FIB-SEM dataset reconstruction status from a GitHub project and summarize them with Claude."
 requires-python = ">=3.12"
@@ -17,4 +17,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fibsem_summarizer"]
+packages = ["src/fibsem_digest"]

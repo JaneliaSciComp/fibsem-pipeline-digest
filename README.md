@@ -1,4 +1,4 @@
-# FIBSEM Project Summarizer
+# FIBSEM Project Digest
 
 Fetches discussion threads from the FIB-SEM reconstruction tracking board (a private GitHub Projects v2 board) into local JSON snapshots, then asks `claude -p` to turn those snapshots into Markdown summaries:
 
@@ -22,7 +22,7 @@ uv sync
 The project board is private, so you need a token with read access to issues and to Projects v2.
 
 1. Go to <https://github.com/settings/tokens> → **Tokens (classic)** → **Generate new token (classic)**.
-2. Name it e.g. `fibsem-summarizer` and pick an expiration.
+2. Name it e.g. `fibsem-digest` and pick an expiration.
 3. Check these scopes:
    - `repo` (full — needed to read issues & comments in private repos)
    - `read:project` (read Projects v2)
@@ -40,7 +40,7 @@ The `.env` file is gitignored. Never commit the token.
 
 ### 4. Make sure `claude` is on your PATH
 
-The summarizer shells out to the Claude Code CLI. Verify:
+The digest shells out to the Claude Code CLI. Verify:
 
 ```sh
 claude --version
@@ -53,7 +53,7 @@ No separate Anthropic API key is handled by this tool — `claude -p` uses your 
 ### One-command full pipeline
 
 ```sh
-uv run -m fibsem_summarizer
+uv run -m fibsem_digest
 ```
 
 This runs `fetch` and then `summarize`, writing (all gitignored):
@@ -75,14 +75,14 @@ stays unchanged.
 ### Stage-by-stage
 
 ```sh
-uv run -m fibsem_summarizer fetch         # pull/update JSON snapshots only
-uv run -m fibsem_summarizer summarize     # produce Markdown from existing snapshots
+uv run -m fibsem_digest fetch         # pull/update JSON snapshots only
+uv run -m fibsem_digest summarize     # produce Markdown from existing snapshots
 ```
 
 ### Convert a summary to slides
 
 ```sh
-uv run -m fibsem_summarizer slides out/2026-04-14_15-30-22/biweekly.md
+uv run -m fibsem_digest slides out/2026-04-14_15-30-22/biweekly.md
 # writes out/2026-04-14_15-30-22/biweekly.pptx next to the input
 ```
 
@@ -125,4 +125,4 @@ FIBSEM_PROJECT_NUMBER=12
 
 ## Tuning the prompts
 
-Both prompts are module-level constants near the top of `src/fibsem_summarizer/summarize.py` (`CUMULATIVE_PROMPT` and `BIWEEKLY_PROMPT`). Just edit them.
+Both prompts are module-level constants near the top of `src/fibsem_digest/summarize.py` (`CUMULATIVE_PROMPT` and `BIWEEKLY_PROMPT`). Just edit them.
