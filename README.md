@@ -11,7 +11,7 @@ Pulls are incremental: re-running only fetches what changed, and edits to previo
 
 ### 1. Install the environment
 
-Requires [`uv`](https://docs.astral.sh/uv/) and Python ≥ 3.11.
+Requires [`uv`](https://docs.astral.sh/uv/) and Python ≥ 3.12.
 
 ```sh
 uv sync
