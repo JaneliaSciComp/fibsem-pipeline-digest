@@ -1,7 +1,7 @@
 """CLI entry point.
 
 Default (no subcommand) runs the full pipeline: fetch → summarize.
-Subcommands are available for running individual stages or converting markdown to pptx.
+Subcommands are available for running individual stages.
 """
 import os
 import sys
@@ -12,7 +12,6 @@ import click
 from dotenv import load_dotenv
 
 from .fetch import GitHubError, fetch_all
-from .slides import markdown_to_pdf
 from .summarize import (
     INTERNAL_FILES,
     changed_since_last_summary,
@@ -172,22 +171,6 @@ def summarize(data_dir: Path, out_dir: Path) -> None:
         sys.exit(1)
 
     clear_pending_run(data_dir)
-
-
-@cli.command()
-@click.argument("markdown", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option(
-    "-o",
-    "--output",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Output .pdf path. Defaults to <markdown>.pdf next to the input.",
-)
-def pdf(markdown: Path, output: Path | None) -> None:
-    """Render a markdown file (e.g. out/biweekly.md) to a styled PDF."""
-    out_path = output if output is not None else markdown.with_suffix(".pdf")
-    markdown_to_pdf(markdown, out_path)
-    click.echo(f"Wrote {out_path}")
 
 
 if __name__ == "__main__":

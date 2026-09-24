@@ -79,15 +79,6 @@ uv run -m fibsem_digest fetch         # pull/update JSON snapshots only
 uv run -m fibsem_digest summarize     # produce Markdown from existing snapshots
 ```
 
-### Convert a summary to slides
-
-```sh
-uv run -m fibsem_digest slides out/2026-04-14_15-30-22/biweekly.md
-# writes out/2026-04-14_15-30-22/biweekly.pptx next to the input
-```
-
-Slide layout: each `##` heading becomes a new slide; bullets and paragraphs under it populate the body. Open the resulting `.pptx` in PowerPoint or Keynote for any cosmetic tweaks.
-
 ## What gets fetched
 
 The tool walks every item on the board and keeps any issue whose column is one of **Imaging**, **Assembly**, **Review**, or **Advanced Processing** (exploratory R&D outside the normal pipeline — reported like the others, but not flagged as needing attention just for being quiet). It additionally keeps issues that just transitioned into or out of **Done** since the previous pull (so those moves show up in the biweekly report). Issues in **Cleaned Up** are ignored.
