@@ -1,7 +1,7 @@
 """CLI entry point.
 
 Default (no subcommand) runs the full pipeline: fetch → summarize.
-Subcommands are available for running individual stages or converting markdown to pptx.
+Subcommands are available for running individual stages or converting markdown to HTML.
 """
 import os
 import sys
@@ -12,7 +12,7 @@ import click
 from dotenv import load_dotenv
 
 from .fetch import GitHubError, fetch_all
-from .slides import markdown_to_pdf
+from .render import markdown_to_html
 from .summarize import (
     INTERNAL_FILES,
     changed_since_last_summary,
@@ -162,6 +162,7 @@ def summarize(data_dir: Path, out_dir: Path) -> None:
         click.echo("Re-run to rebuild it; per-dataset summaries are kept.", err=True)
         sys.exit(1)
 
+    markdown_to_html(biweekly_path, biweekly_path.with_suffix(".html"))
     click.echo(f"Wrote summaries under {run_dir}/.")
     if failed:
         click.echo(
@@ -181,12 +182,12 @@ def summarize(data_dir: Path, out_dir: Path) -> None:
     "--output",
     type=click.Path(path_type=Path),
     default=None,
-    help="Output .pdf path. Defaults to <markdown>.pdf next to the input.",
+    help="Output .html path. Defaults to <markdown>.html next to the input.",
 )
-def pdf(markdown: Path, output: Path | None) -> None:
-    """Render a markdown file (e.g. out/biweekly.md) to a styled PDF."""
-    out_path = output if output is not None else markdown.with_suffix(".pdf")
-    markdown_to_pdf(markdown, out_path)
+def html(markdown: Path, output: Path | None) -> None:
+    """Render a markdown file (e.g. a per-dataset summary) to a standalone HTML page."""
+    out_path = output if output is not None else markdown.with_suffix(".html")
+    markdown_to_html(markdown, out_path)
     click.echo(f"Wrote {out_path}")
 
 

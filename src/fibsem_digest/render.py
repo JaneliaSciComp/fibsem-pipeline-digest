@@ -1,13 +1,16 @@
-"""Render a markdown document to a styled PDF using WeasyPrint."""
+"""Render a markdown document to a standalone, styled HTML file."""
+import html
 from pathlib import Path
 
 from markdown_it import MarkdownIt
-from weasyprint import CSS, HTML
 
 
 _CSS = """
 @page { size: A4; margin: 2cm 2.2cm; }
 body {
+    max-width: 52em;
+    margin: 2em auto;
+    padding: 0 1em;
     font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 11pt;
     line-height: 1.45;
@@ -51,10 +54,14 @@ blockquote {
 """
 
 
-def markdown_to_pdf(md_path: Path, pdf_path: Path) -> Path:
+def markdown_to_html(md_path: Path, html_path: Path) -> Path:
     md_text = md_path.read_text(encoding="utf-8")
-    html_body = MarkdownIt("commonmark", {"html": False}).render(md_text)
-    html_doc = f"<!doctype html><meta charset='utf-8'><title>{md_path.stem}</title><body>{html_body}</body>"
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-    HTML(string=html_doc).write_pdf(pdf_path, stylesheets=[CSS(string=_CSS)])
-    return pdf_path
+    body = MarkdownIt("commonmark", {"html": False}).render(md_text)
+    doc = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{html.escape(md_path.stem)}</title><style>{_CSS}</style></head>"
+        f"<body>{body}</body></html>"
+    )
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(doc, encoding="utf-8")
+    return html_path

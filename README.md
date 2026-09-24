@@ -60,7 +60,7 @@ This runs `fetch` and then `summarize`, writing (all gitignored):
 
 - `data/<repo>__<num>.json` — raw snapshots (one per dataset, updated in place).
 - `out/<YYYY-MM-DD_HH-MM-SS>/<num>_<title>.md` — per-dataset methods + retrospective.
-- `out/<YYYY-MM-DD_HH-MM-SS>/biweekly.md` — single aggregated status report.
+- `out/<YYYY-MM-DD_HH-MM-SS>/biweekly.html` — single aggregated status report (the raw `biweekly.md` it was rendered from sits next to it).
 
 Each summarize run creates a fresh timestamped directory under `out/`, so prior runs
 are preserved untouched. All Markdown files for a run sit flat in that directory.
@@ -79,14 +79,14 @@ uv run -m fibsem_digest fetch         # pull/update JSON snapshots only
 uv run -m fibsem_digest summarize     # produce Markdown from existing snapshots
 ```
 
-### Convert a summary to slides
+### Render any summary to HTML
 
 ```sh
-uv run -m fibsem_digest slides out/2026-04-14_15-30-22/biweekly.md
-# writes out/2026-04-14_15-30-22/biweekly.pptx next to the input
+uv run -m fibsem_digest html out/2026-04-14_15-30-22/126_jrc_aphid-salivary-1.md
+# writes out/2026-04-14_15-30-22/126_jrc_aphid-salivary-1.html next to the input
 ```
 
-Slide layout: each `##` heading becomes a new slide; bullets and paragraphs under it populate the body. Open the resulting `.pptx` in PowerPoint or Keynote for any cosmetic tweaks.
+The biweekly report is rendered automatically; use this for per-dataset summaries. The output is a single self-contained file (styles inlined), so it can be attached or pasted anywhere.
 
 ## What gets fetched
 
