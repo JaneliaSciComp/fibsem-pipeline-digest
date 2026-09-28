@@ -1,67 +1,260 @@
-"""Render a markdown document to a standalone, styled HTML file."""
-import html
-from pathlib import Path
+"""Render the cycle's snapshots plus the Claude digest into one self-contained HTML page.
 
-from markdown_it import MarkdownIt
+Layout: board (who is in which column) → needs attention → one collapsible card per
+dataset (title, timeline, owner line; expand for progress/blockers, post-mortem for
+finished datasets, raw activity). All facts here come from the snapshots; only the
+bullet text comes from the digest.
+"""
+import html as H
+import re
+from collections import Counter
+from datetime import datetime
+from typing import Any
+
+from .digest import Digest, dt, window_start
+
+COLLABORATORS = {"CellMap", "FuncEWOrm", "eFIB-SEM SR"}
+STAGES = [
+    ("Imaging", "IM"),
+    ("Assembly", "ASM"),
+    ("Review", "REV"),
+    ("Advanced Processing", "AP"),
+    ("Done", "DONE"),
+]
+COLUMNS = [s for s, _ in STAGES]
 
 
-_CSS = """
-@page { size: A4; margin: 2cm 2.2cm; }
-body {
-    max-width: 52em;
-    margin: 2em auto;
-    padding: 0 1em;
-    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
-    font-size: 11pt;
-    line-height: 1.45;
-    color: #1a1a1a;
-}
-h1 { font-size: 22pt; margin: 0 0 0.6em; color: #111; }
-h2 {
-    font-size: 15pt;
-    margin: 1.4em 0 0.4em;
-    padding-bottom: 0.15em;
-    border-bottom: 1px solid #ddd;
-    page-break-after: avoid;
-}
-h3 { font-size: 12pt; margin: 1em 0 0.3em; page-break-after: avoid; }
-p { margin: 0.4em 0; }
-ul, ol { margin: 0.3em 0 0.6em 1.2em; padding: 0; }
-li { margin: 0.15em 0; }
-code {
-    font-family: Menlo, Consolas, monospace;
-    font-size: 0.92em;
-    background: #f3f3f3;
-    padding: 0.05em 0.3em;
-    border-radius: 3px;
-}
-pre {
-    background: #f6f6f6;
-    padding: 0.6em 0.8em;
-    border-radius: 4px;
-    font-size: 0.9em;
-    overflow-x: auto;
-    page-break-inside: avoid;
-}
-pre code { background: none; padding: 0; }
-a { color: #0a5fb4; text-decoration: none; }
-blockquote {
-    border-left: 3px solid #ccc;
-    margin: 0.6em 0;
-    padding: 0.1em 0.9em;
-    color: #555;
-}
+def _css(stage: str) -> str:
+    return stage.lower().replace(" ", "-")
+
+
+def facts(snap: dict[str, Any], start: datetime | None) -> dict[str, Any]:
+    """Everything the page shows about a dataset that is not narrative."""
+    issue = snap["issue"]
+    body = issue["body"] or ""
+    owner = re.search(r'"owner"\s*:\s*"([^"]+)"', body)
+    # First time each column was entered; later re-entries (QC bouncing) are ignored.
+    entered: dict[str, datetime] = {}
+    for t in snap["status_history"]:
+        entered.setdefault(t["to"], dt(t.get("changed_at") or t["detected_at"]))
+    preview = None
+    for src in [body] + [c["body"] or "" for c in snap["comments"]]:
+        if m := re.search(r"\[imaging_preview\]\((http[^)\s]+)\)", src):
+            preview = m.group(1)
+    in_window = [c for c in snap["comments"] if start is None or dt(c["createdAt"]) > start]
+    return {
+        "number": issue["number"],
+        "title": issue["title"],
+        "url": issue["url"],
+        "status": snap["current_status"],
+        "assignees": issue["assignees"],
+        "owner": owner.group(1) if owner else "unknown",
+        "collab": next((l for l in issue["labels"] if l in COLLABORATORS), "unknown"),
+        "entered": entered,
+        "new": snap["previous_last_pull_at"] is None,
+        "preview": preview,
+        "in_window": in_window,
+        "last_activity": max(
+            [dt(c["createdAt"]) for c in snap["comments"]] + [dt(issue["created_at"])]
+        ),
+        "people": Counter((c.get("author") or {}).get("login", "?") for c in in_window),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# HTML pieces
+# --------------------------------------------------------------------------- #
+
+
+def esc(s: Any) -> str:
+    return H.escape(str(s))
+
+
+def fmt(d: datetime) -> str:
+    return d.strftime("%b %-d")
+
+
+def inline_md(s: str) -> str:
+    s = H.escape(s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
+    return re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2">\1</a>', s)
+
+
+def timeline(d: dict[str, Any], start: datetime | None) -> str:
+    """IM → ASM → REV → AP → DONE. Everything left of the current column and every
+    column ever entered is coloured; the current one is filled; first-entry date
+    below (bold if it happened this cycle)."""
+    cur = COLUMNS.index(d["status"])
+    out = []
+    for i, (stage, short) in enumerate(STAGES):
+        state = "current" if i == cur else ("reached" if i < cur or stage in d["entered"] else "")
+        label = "&nbsp;"
+        if date := d["entered"].get(stage):
+            label = fmt(date)
+            if start is None or date > start:
+                label = f"<b>{label}</b>"
+        out.append(f'<span class="stage {_css(stage)} {state}"><i>{short}</i><small>{label}</small></span>')
+    return '<div class="tl">' + '<span class="arrow">→</span>'.join(out) + "</div>"
+
+
+def activity(d: dict[str, Any]) -> str:
+    rows = []
+    for c in d["in_window"]:
+        body = c["body"] or ""
+        first = (re.sub(r"<[^>]+>", "", body).strip().splitlines() or [""])[0]
+        author = (c.get("author") or {}).get("login", "?")
+        rows.append(
+            f'<tr><td class="muted">{c["createdAt"][:10]}</td><td><span class="who">{esc(author)}</span></td>'
+            f'<td>{inline_md(first[:200])}{"…" if len(body) > 200 else ""}</td></tr>'
+        )
+    return f'<table class="act">{"".join(rows)}</table>' if rows else '<p class="muted">No comments in this period.</p>'
+
+
+def _bullets(items: list[str]) -> str:
+    return "".join(f"<li>{inline_md(i)}</li>" for i in items)
+
+
+def card(d: dict[str, Any], digest: Digest, start: datetime | None, last: datetime, flagged: set[int]) -> str:
+    n = digest.datasets.get(d["number"])
+    prog = _bullets(n.progress) if n and n.progress else '<li class="muted">No progress reported.</li>'
+    blk = _bullets(n.blockers) if n else ""
+    who = " ".join(f'<span class="who">{esc(p)}</span>' for p, _ in d["people"].most_common(4))
+    eye = (
+        f'<a class="eye" href="{esc(d["preview"])}" title="open imaging preview (neuroglancer)" target="_blank">'
+        '<svg viewBox="0 0 24 16" width="18" height="12"><path d="M1 8c3-5 7-7 11-7s8 2 11 7c-3 5-7 7-11 7S4 13 1 8z" '
+        'fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="8" r="3.2" fill="currentColor"/></svg></a>'
+        if d["preview"] else ""
+    )
+    attn = '<span class="attn" title="needs attention">!</span>' if d["number"] in flagged else ""
+    pm_html = ""
+    if pm := digest.postmortem.get(d["number"]):
+        sec = lambda t, items: f"<section><h4>{t}</h4><ul>{_bullets(items)}</ul></section>"  # noqa: E731
+        pm_html = (
+            '<details class="pm" open><summary>Post-mortem</summary><div class="cols3">'
+            f'{sec("What went well", pm.well)}{sec("What didn&#39;t", pm.bad)}{sec("Takeaways / actions", pm.actions)}'
+            "</div></details>"
+        )
+    return f"""
+<details class="card {'done' if d['status'] == 'Done' else ''}" id="ds-{d['number']}">
+  <summary>
+    <header>
+      <h3>{attn}<a href="{esc(d['url'])}" target="_blank">{esc(d['title'])}</a> <small class="muted">#{d['number']}</small> {eye}{'<span class="newtag">new</span>' if d['new'] else ''}</h3>
+      {timeline(d, start)}
+    </header>
+    <div class="meta"><span><b>Owner</b> {esc(d['owner'])} · {esc(d['collab'])}</span><span><b>Assignee</b> {esc(', '.join(d['assignees']) or '—')}</span>
+      <span><b>Last activity</b> {fmt(d['last_activity'])} <small class="muted">({(last - d['last_activity']).days}d ago)</small></span><span class="chev">▸</span></div>
+  </summary>
+  <div class="cols"><section><h4>Progress</h4><ul>{prog}</ul></section>{f'<section class="blockers"><h4>Open questions / blockers</h4><ul>{blk}</ul></section>' if blk else ''}</div>
+  {pm_html}
+  <details class="act-wrap"><summary>Activity ({len(d['in_window'])} comments · {who})</summary>{activity(d)}</details>
+</details>"""
+
+
+def board(cycle: list[dict[str, Any]], flagged: set[int]) -> str:
+    counts = Counter(d["status"] for d in cycle)
+    cols = []
+    for c in COLUMNS:
+        chips = "".join(
+            f'<a class="chip {"flagged" if d["number"] in flagged else ""}" href="#ds-{d["number"]}" title="{esc(d["title"])}">'
+            f'{"<b>!</b> " if d["number"] in flagged else ""}{esc(d["title"].removeprefix("jrc_"))}{" <em>new</em>" if d["new"] else ""}</a>'
+            for d in cycle
+            if d["status"] == c
+        )
+        cols.append(f'<div class="col {_css(c)}"><h5>{esc(c)} <span class="n">{counts.get(c, 0)}</span></h5>{chips}</div>')
+    return "".join(cols)
+
+
+def attention(digest: Digest, by_num: dict[int, dict[str, Any]]) -> str:
+    items = []
+    for a in digest.attention:
+        d = by_num.get(a.number)
+        if d is None:
+            continue
+        items.append(
+            f'<li><a href="#ds-{d["number"]}"><b>{esc(d["title"])}</b></a> '
+            f'<span class="muted">{esc(d["status"])} · {esc(", ".join(d["assignees"]) or "unassigned")}</span>'
+            f"<div>{inline_md(a.text)}</div></li>"
+        )
+    return "".join(items) or '<li class="muted">Nothing blocking.</li>'
+
+
+CSS = """
+:root{--fg:#1c1c1c;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb;--warn:#b45309;--warnbg:#fff7ed;--attn:#fef3c7;
+ --imaging:#0ea5e9;--assembly:#8b5cf6;--review:#14b8a6;--advanced-processing:#f59e0b;--done:#22c55e}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:var(--fg);background:#f6f7f9}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+main{max-width:64em;margin:0 auto;padding:1.5em 1em 4em}
+h1{font-size:1.5em;margin:0}h2{font-size:1.1em;margin:1.8em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:1em}
+h2 .tools{margin-left:auto;font-size:.75em;font-weight:400}h2 .tools button{font:inherit;background:none;border:0;color:var(--accent);cursor:pointer;padding:0 .3em}
+.muted{color:var(--muted)}small{font-size:.85em}
+.top{display:flex;align-items:baseline;gap:1em;flex-wrap:wrap}
+.board{display:grid;grid-template-columns:repeat(5,1fr);gap:.6em}
+.col{background:#fff;border:1px solid var(--line);border-top:3px solid var(--c);border-radius:8px;padding:.5em .6em;min-height:4.5em}
+.col.imaging{--c:var(--imaging)}.col.assembly{--c:var(--assembly)}.col.review{--c:var(--review)}.col.advanced-processing{--c:var(--advanced-processing)}.col.done{--c:var(--done)}
+.col h5{margin:0 0 .4em;font-size:.75em;text-transform:uppercase;letter-spacing:.04em;color:var(--c)}.col .n{float:right;color:var(--fg)}
+.chip{display:block;font-size:.82em;padding:.2em .45em;margin:.2em 0;border-radius:5px;background:color-mix(in srgb,var(--c) 12%,#fff);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip.flagged{background:var(--attn)}.chip b{color:var(--warn)}.chip em{font-style:normal;color:var(--accent);font-size:.85em}
+.attention{background:var(--warnbg);border:1px solid #fdba74;border-radius:8px;padding:.5em 1em .5em 1.3em;margin:0}
+.attention li{margin:.45em 0}.attention li div{font-size:.95em}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:.6em 1.1em;margin:.5em 0;font-size:1em}
+.card>summary{list-style:none;display:block;color:inherit;font-size:1em}.card>summary::-webkit-details-marker{display:none}
+.chev{margin-left:auto;color:#9ca3af;transition:transform .15s}.card[open] .chev{transform:rotate(90deg)}
+.card[open]>summary{border-bottom:1px solid var(--line);padding-bottom:.5em;margin-bottom:.5em}
+.card.done{border-color:#bbf7d0}
+.card header{display:flex;align-items:center;gap:1em;flex-wrap:wrap}
+.card h3{margin:0;font-size:1.05em;flex:1;min-width:16em;display:flex;align-items:center;gap:.4em}
+.attn{display:inline-block;width:1.25em;height:1.25em;border-radius:50%;background:var(--warn);color:#fff;text-align:center;font-weight:700;font-size:.75em;line-height:1.25em}
+.eye{color:#9ca3af;display:inline-flex;align-items:center}.eye:hover{color:var(--accent)}
+.newtag{font-size:.7em;font-weight:400;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:0 .5em}
+.tl{display:flex;align-items:flex-start;gap:.15em;font-size:.72em}
+.stage{display:flex;flex-direction:column;align-items:center;width:4.6em}
+.stage i{font-style:normal;font-weight:700;letter-spacing:.03em;padding:.1em .5em;border-radius:999px;border:1.5px solid #d1d5db;color:#9ca3af}
+.stage.reached i{border-color:var(--c);color:var(--c)}.stage.current i{background:var(--c);border-color:var(--c);color:#fff}
+.stage small{color:var(--muted);font-size:.9em;white-space:nowrap;margin-top:.15em}.stage small b{color:var(--accent)}
+.stage.imaging{--c:var(--imaging)}.stage.assembly{--c:var(--assembly)}.stage.review{--c:var(--review)}.stage.advanced-processing{--c:var(--advanced-processing)}.stage.done{--c:var(--done)}
+.arrow{color:#9ca3af;margin-top:.05em}
+.meta{display:flex;gap:1.4em;flex-wrap:wrap;font-size:.86em;color:#374151;margin:.3em 0 0}.meta b{color:var(--muted);font-weight:500;margin-right:.2em}
+details{margin-top:.4em;font-size:.93em}summary{cursor:pointer;color:var(--muted);font-size:.9em}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:1em;margin-top:.5em}.cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:1em;margin-top:.3em}
+.cols section,.cols3 section{min-width:0}.cols ul,.cols3 ul{margin:0;padding-left:1.2em}.cols li,.cols3 li{margin:.2em 0}
+.cols h4,.cols3 h4{margin:0 0 .3em;font-size:.78em;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.blockers{background:var(--warnbg);border-radius:8px;padding:.5em .9em}.blockers h4{color:var(--warn)}
+.pm{background:#f0fdf4;border-radius:8px;padding:.4em .8em}.pm summary{color:#166534;font-weight:600}
+.who{font-size:.85em;background:#f1f5f9;border-radius:4px;padding:0 .4em;white-space:nowrap}
+.act{width:100%;border-collapse:collapse;margin-top:.4em}.act td{padding:.25em .5em;border-top:1px solid var(--line);vertical-align:top}
+.act td:first-child{white-space:nowrap;width:6.5em}.act td:nth-child(2){width:8em}
+@media(max-width:800px){.board{grid-template-columns:repeat(2,1fr)}.cols,.cols3{grid-template-columns:1fr}}
+@media print{.tools{display:none}.card{break-inside:avoid}.act-wrap{display:none}}
+"""
+
+JS = """
+const set=o=>document.querySelectorAll('.card').forEach(d=>d.open=o);
+document.getElementById('exp').onclick=()=>set(true);document.getElementById('col').onclick=()=>set(false);
+const openHash=()=>{const t=document.querySelector(location.hash||'#none');if(t&&t.classList.contains('card'))t.open=true};
+addEventListener('hashchange',openHash);openHash();
 """
 
 
-def markdown_to_html(md_path: Path, html_path: Path) -> Path:
-    md_text = md_path.read_text(encoding="utf-8")
-    body = MarkdownIt("commonmark", {"html": False}).render(md_text)
-    doc = (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"<title>{html.escape(md_path.stem)}</title><style>{_CSS}</style></head>"
-        f"<body>{body}</body></html>"
-    )
-    html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(doc, encoding="utf-8")
-    return html_path
+def render(cycle: list[dict[str, Any]], digest: Digest) -> str:
+    start = window_start(cycle)
+    issues_url = f"https://github.com/{cycle[0]['issue']['repository']}/issues"
+    last = max(dt(s["last_pull_at"]) for s in cycle)
+    ds = sorted((facts(s, start) for s in cycle), key=lambda d: (COLUMNS.index(d["status"]), d["number"]))
+    by_num = {d["number"]: d for d in ds}
+    flagged = {a.number for a in digest.attention}
+    period = f"{fmt(start)} → " if start else ""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FIB-SEM digest · {last:%Y-%m-%d}</title><style>{CSS}</style></head><body><main>
+<div class="top"><h1>FIB-SEM reconstruction digest</h1>
+<span class="muted">{period}{last:%b %-d, %Y} · <a href="{esc(issues_url)}">issues</a></span></div>
+
+<h2>Board</h2>
+<div class="board">{board(ds, flagged)}</div>
+
+<h2>Needs attention this week</h2>
+<ul class="attention">{attention(digest, by_num)}</ul>
+
+<h2>Datasets <span class="tools"><button id="exp">expand all</button>·<button id="col">collapse all</button></span></h2>
+{"".join(card(d, digest, start, last, flagged) for d in ds)}
+</main><script>{JS}</script></body></html>"""
