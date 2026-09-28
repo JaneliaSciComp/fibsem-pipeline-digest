@@ -1,28 +1,30 @@
 """CLI entry point.
 
-Default (no subcommand) runs the full pipeline: fetch → digest → render.
+Default (no subcommand) runs the full pipeline: fetch → digest → render, into one new
+run directory out/<timestamp>/ holding board.json, digest.json and digest.html.
 """
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
 from dotenv import load_dotenv
 
-from .digest import Digest, load_cycle, make_digest
-from .fetch import GitHubError, fetch_all
+from .digest import Digest, dt, make_digest
+from .fetch import GitHubError, fetch_board
 from .render import render
 
-# Repo-root-relative locations. The CLI is invoked from the project directory
-# (that's where `uv run` lives), so this keeps paths predictable.
-DEFAULT_DATA_DIR = Path("data")
 DEFAULT_OUT_DIR = Path("out")
+DEFAULT_WINDOW = timedelta(days=14)
 
-_data_dir = click.option(
-    "--data-dir", type=click.Path(path_type=Path), default=DEFAULT_DATA_DIR, show_default=True
+_out_dir = click.option("--out-dir", type=click.Path(path_type=Path), default=DEFAULT_OUT_DIR, show_default=True)
+_since = click.option(
+    "--since", type=click.DateTime(), default=None,
+    help="Start of the reporting window. Default: the previous run's fetch time, else 14 days ago.",
 )
+_run_dir = click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 
 
 def _load_config() -> tuple[str, str, int]:
@@ -36,12 +38,23 @@ def _load_config() -> tuple[str, str, int]:
     return token, org, int(os.environ.get("FIBSEM_PROJECT_NUMBER", "9"))
 
 
-def _cycle(data_dir: Path) -> list[dict]:
-    cycle = load_cycle(data_dir)
-    if not cycle:
-        click.echo(f"No snapshots in {data_dir}/. Run `fetch` first.", err=True)
-        sys.exit(1)
-    return cycle
+def default_since(out_dir: Path, now: datetime) -> datetime:
+    """When the previous run fetched, or 14 days ago if there is none."""
+    previous = sorted(out_dir.glob("*/board.json"))
+    if previous:
+        return dt(json.loads(previous[-1].read_text(encoding="utf-8"))["fetched_at"])
+    return now - DEFAULT_WINDOW
+
+
+def _board(run_dir: Path) -> dict:
+    return json.loads((run_dir / "board.json").read_text(encoding="utf-8"))
+
+
+def _write(run_dir: Path, name: str, text: str) -> Path:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / name
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 @click.group(invoke_without_command=True)
@@ -49,55 +62,48 @@ def _cycle(data_dir: Path) -> list[dict]:
 def cli(ctx: click.Context) -> None:
     """FIB-SEM reconstruction digest: fetch the board, digest it with Claude, render HTML."""
     if ctx.invoked_subcommand is None:
-        ctx.invoke(fetch)
-        ctx.invoke(digest)
+        run_dir = ctx.invoke(fetch)
+        ctx.invoke(digest, run_dir=run_dir)
 
 
 @cli.command()
-@_data_dir
-def fetch(data_dir: Path) -> None:
-    """Pull GitHub issues from the project board into JSON snapshots."""
+@_out_dir
+@_since
+def fetch(out_dir: Path, since: datetime | None) -> Path:
+    """Pull the board from GitHub into out/<timestamp>/board.json."""
     token, org, project_number = _load_config()
-    click.echo(f"Fetching items from {org}/projects/{project_number}...")
+    now = datetime.now(timezone.utc)
+    since = since.replace(tzinfo=timezone.utc) if since and since.tzinfo is None else since
+    since = since or default_since(out_dir, now)
+    click.echo(f"Fetching {org}/projects/{project_number}, window since {since:%Y-%m-%d %H:%M} UTC...")
     try:
-        written = fetch_all(data_dir, org, project_number, token)
+        board = fetch_board(org, project_number, token, since)
     except GitHubError as e:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(1)
-    click.echo(f"Wrote/updated {len(written)} snapshot(s) in {data_dir}/.")
+    run_dir = out_dir / now.astimezone().strftime("%Y-%m-%d_%H-%M-%S")
+    _write(run_dir, "board.json", json.dumps(board, indent=1, ensure_ascii=False))
+    click.echo(f"Wrote {len(board['datasets'])} dataset(s) to {run_dir / 'board.json'}")
+    return run_dir
 
 
 @cli.command()
-@_data_dir
-@click.option("--out-dir", type=click.Path(path_type=Path), default=DEFAULT_OUT_DIR, show_default=True)
-def digest(data_dir: Path, out_dir: Path) -> None:
-    """Ask claude -p for the narrative digest of the latest fetch, then render it.
-
-    Writes out/<timestamp>/digest.json (Claude's output) and digest.html next to it.
-    """
-    cycle = _cycle(data_dir)
-    run_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    click.echo(f"Digesting {len(cycle)} dataset(s) via claude -p...")
-    d = make_digest(cycle)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "digest.json").write_text(d.model_dump_json(indent=2), encoding="utf-8")
-    out = _render(cycle, d, run_dir)
-    click.echo(f"Wrote {out}")
+@_run_dir
+def digest(run_dir: Path) -> None:
+    """Ask claude -p for the narrative digest of RUN_DIR/board.json, then render it."""
+    board = _board(run_dir)
+    click.echo(f"Digesting {len(board['datasets'])} dataset(s) via claude -p...")
+    d = make_digest(board)
+    _write(run_dir, "digest.json", d.model_dump_json(indent=2))
+    click.echo(f"Wrote {_write(run_dir, 'digest.html', render(board, d))}")
 
 
 @cli.command("render")
-@click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@_data_dir
-def render_cmd(run_dir: Path, data_dir: Path) -> None:
-    """Re-render digest.html in RUN_DIR from its digest.json and the current snapshots."""
+@_run_dir
+def render_cmd(run_dir: Path) -> None:
+    """Re-render RUN_DIR/digest.html from its board.json and digest.json (no Claude call)."""
     d = Digest.model_validate_json((run_dir / "digest.json").read_text(encoding="utf-8"))
-    click.echo(f"Wrote {_render(_cycle(data_dir), d, run_dir)}")
-
-
-def _render(cycle: list[dict], d: Digest, run_dir: Path) -> Path:
-    out = run_dir / "digest.html"
-    out.write_text(render(cycle, d), encoding="utf-8")
-    return out
+    click.echo(f"Wrote {_write(run_dir, 'digest.html', render(_board(run_dir), d))}")
 
 
 if __name__ == "__main__":

@@ -1,27 +1,21 @@
-"""Fetch GitHub issues from a Projects v2 board into per-issue JSON snapshots.
+"""Fetch the datasets on a Projects v2 board, with full comment and column history.
 
-Incremental: on repeated runs we diff against the previous snapshot so that:
-- new comments are appended,
-- edited comments are replaced in place (tracked in an `edits` log),
-- issue body revisions are recorded in `body_history`,
-- status (column) transitions are recorded in `status_history`.
+Stateless: every run pulls everything GitHub knows about the relevant issues. Column
+moves come from the issues' own timelines (`ProjectV2ItemStatusChangedEvent`), so no
+local bookkeeping between runs is needed.
 
 All GitHub calls go through the GraphQL v4 API because Projects v2 has no REST endpoint.
 """
-import hashlib
-import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 import httpx
 
 GITHUB_GRAPHQL = "https://api.github.com/graphql"
 
-# Columns we care about for reporting. Items in other columns are skipped unless
-# they transitioned recently (see CollectedItem.is_recent_done).
+# Columns that are always reported. Done items are included only when they got there
+# inside the reporting window; Cleaned Up is the archive and never fetched.
 ACTIVE_STATUSES: set[str] = {"Imaging", "Assembly", "Review", "Advanced Processing"}
 
 
@@ -37,13 +31,9 @@ _PROJECT_ITEMS_QUERY = """
 query ($org: String!, $project: Int!, $after: String) {
   organization(login: $org) {
     projectV2(number: $project) {
-      id
-      title
       items(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id
-          updatedAt
           fieldValues(first: 20) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
@@ -56,13 +46,11 @@ query ($org: String!, $project: Int!, $after: String) {
           content {
             __typename
             ... on Issue {
-              id
               number
               title
               url
               state
               createdAt
-              updatedAt
               author { login }
               repository { nameWithOwner }
               body
@@ -77,18 +65,24 @@ query ($org: String!, $project: Int!, $after: String) {
 }
 """
 
-_ISSUE_COMMENTS_QUERY = """
-query ($owner: String!, $name: String!, $number: Int!, $after: String) {
+# Comments are paginated; column moves are few, so 100 is plenty.
+# ponytail: no timeline pagination, add if a dataset ever bounces >100 times.
+_ISSUE_HISTORY_QUERY = """
+query ($owner: String!, $name: String!, $number: Int!, $after: String, $events: Boolean!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       comments(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
+        nodes { author { login } createdAt body }
+      }
+      timelineItems(first: 100, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) @include(if: $events) {
         nodes {
-          id
-          author { login }
-          createdAt
-          updatedAt
-          body
+          ... on ProjectV2ItemStatusChangedEvent {
+            createdAt
+            previousStatus
+            status
+            project { number }
+          }
         }
       }
     }
@@ -140,167 +134,33 @@ class GitHubClient:
                     "(check token scopes: read:project, read:org)."
                 )
             items = proj["items"]
-            for node in items["nodes"]:
-                yield node
+            yield from items["nodes"]
             if not items["pageInfo"]["hasNextPage"]:
                 return
             after = items["pageInfo"]["endCursor"]
 
-    def issue_comments(
-        self, owner: str, name: str, number: int
-    ) -> list[dict[str, Any]]:
-        """Return all comments for an issue, oldest first."""
+    def issue_history(
+        self, owner: str, name: str, number: int, project_number: int
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return (comments oldest first, column transitions oldest first) for an issue."""
         comments: list[dict[str, Any]] = []
+        transitions: list[dict[str, Any]] = []
         after: str | None = None
         while True:
             data = self._post(
-                _ISSUE_COMMENTS_QUERY,
-                {"owner": owner, "name": name, "number": number, "after": after},
+                _ISSUE_HISTORY_QUERY,
+                {"owner": owner, "name": name, "number": number, "after": after, "events": after is None},
             )
-            conn = data["repository"]["issue"]["comments"]
-            comments.extend(conn["nodes"])
-            if not conn["pageInfo"]["hasNextPage"]:
-                return comments
-            after = conn["pageInfo"]["endCursor"]
-
-
-# --------------------------------------------------------------------------- #
-# Snapshot merge logic
-# --------------------------------------------------------------------------- #
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _status_from_item(item: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Return (status, when the Status field was last changed on the board)."""
-    for fv in item.get("fieldValues", {}).get("nodes", []):
-        if fv and fv.get("field", {}).get("name") == "Status":
-            return fv.get("name"), fv.get("updatedAt")
-    return None, None
-
-
-def _slug(issue: dict[str, Any]) -> str:
-    """File-safe identifier for snapshot filenames: <org>__<repo>__<num>.json."""
-    repo = issue["repository"]["nameWithOwner"]  # e.g. Janelia/foo
-    return f"{repo.replace('/', '__')}__{issue['number']}"
-
-
-def merge_snapshot(
-    existing: dict[str, Any] | None,
-    issue: dict[str, Any],
-    comments: list[dict[str, Any]],
-    status: str | None,
-    status_changed_at: str | None = None,
-) -> dict[str, Any]:
-    """Merge newly fetched issue data into the previous snapshot.
-
-    Returns the new snapshot dict. `existing` may be None on a first pull.
-    `status_changed_at` is when the board's Status field was actually changed (from
-    GitHub), as opposed to `detected_at`, which is when this fetch noticed it.
-    """
-    detected = _now()
-    previous_last_pull = existing.get("last_pull_at") if existing else None
-
-    # Comments: keyed by node ID. Preserve previous list order when possible,
-    # append any new IDs at the end (they should already be chronological).
-    prev_comments: list[dict[str, Any]] = (
-        list(existing["comments"]) if existing else []
-    )
-    prev_by_id = {c["id"]: c for c in prev_comments}
-    new_by_id = {c["id"]: c for c in comments}
-
-    edits: list[dict[str, Any]] = list(existing.get("edits", [])) if existing else []
-    merged_comments: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    # Walk the fresh list so we capture the current order from GitHub.
-    for c in comments:
-        seen.add(c["id"])
-        prev = prev_by_id.get(c["id"])
-        if prev is not None and prev.get("body") != c.get("body"):
-            edits.append(
-                {
-                    "comment_id": c["id"],
-                    "old_body": prev["body"],
-                    "new_body": c["body"],
-                    "detected_at": detected,
-                }
-            )
-        merged_comments.append(c)
-
-    # Any previous comments that vanished (deleted on GitHub) are dropped from
-    # `comments` but recorded for traceability.
-    deleted = [c for c in prev_comments if c["id"] not in new_by_id]
-    deletions: list[dict[str, Any]] = (
-        list(existing.get("deletions", [])) if existing else []
-    )
-    for c in deleted:
-        deletions.append({"comment": c, "detected_at": detected})
-
-    # Issue body history.
-    body_history: list[dict[str, Any]] = (
-        list(existing.get("body_history", [])) if existing else []
-    )
-    prev_body = existing.get("issue", {}).get("body") if existing else None
-    if prev_body is None:
-        # First sighting — seed history with current body.
-        body_history.append({"body": issue["body"], "recorded_at": detected})
-    elif _hash(prev_body) != _hash(issue["body"] or ""):
-        body_history.append({"body": issue["body"], "recorded_at": detected})
-
-    # Status history.
-    status_history: list[dict[str, Any]] = (
-        list(existing.get("status_history", [])) if existing else []
-    )
-    prev_status = status_history[-1]["to"] if status_history else None
-    if status != prev_status:
-        status_history.append(
-            {
-                "from": prev_status,
-                "to": status,
-                "changed_at": status_changed_at,
-                "detected_at": detected,
-            }
-        )
-
-    return {
-        "schema_version": 1,
-        "last_pull_at": detected,
-        "previous_last_pull_at": previous_last_pull,
-        "issue": {
-            "id": issue["id"],
-            "number": issue["number"],
-            "title": issue["title"],
-            "url": issue["url"],
-            "state": issue["state"],
-            "author": (issue.get("author") or {}).get("login"),
-            "created_at": issue["createdAt"],
-            "updated_at": issue["updatedAt"],
-            "repository": issue["repository"]["nameWithOwner"],
-            "labels": [n["name"] for n in issue["labels"]["nodes"]],
-            "assignees": [n["login"] for n in issue["assignees"]["nodes"]],
-            "body": issue["body"],
-        },
-        "current_status": status,
-        "status_history": status_history,
-        "body_history": body_history,
-        "comments": merged_comments,
-        "edits": edits,
-        "deletions": deletions,
-    }
-
-
-def _write_atomic(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+            issue = data["repository"]["issue"]
+            comments.extend(issue["comments"]["nodes"])
+            for ev in (issue.get("timelineItems") or {}).get("nodes", []):
+                if ev and (ev.get("project") or {}).get("number") == project_number:
+                    transitions.append(
+                        {"from": ev["previousStatus"] or None, "to": ev["status"], "at": ev["createdAt"]}
+                    )
+            if not issue["comments"]["pageInfo"]["hasNextPage"]:
+                return comments, transitions
+            after = issue["comments"]["pageInfo"]["endCursor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -308,53 +168,56 @@ def _write_atomic(path: Path, data: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def fetch_all(
-    data_dir: Path,
-    org: str,
-    project_number: int,
-    token: str,
-    include_statuses: set[str] | None = None,
-) -> list[Path]:
-    """Fetch every active dataset's issue and save/merge a snapshot.
+def _status_from_item(item: dict[str, Any]) -> tuple[str | None, str | None]:
+    """(column name, when it was last changed) from the item's Status field."""
+    for fv in item.get("fieldValues", {}).get("nodes", []):
+        if fv and (fv.get("field") or {}).get("name") == "Status":
+            return fv.get("name"), fv.get("updatedAt")
+    return None, None
 
-    Returns the list of snapshot paths that were written.
+
+def fetch_board(org: str, project_number: int, token: str, since: datetime) -> dict[str, Any]:
+    """Everything the digest needs about the board, in one JSON-serialisable dict.
+
+    Includes every issue in an active column plus issues moved to Done after `since`.
     """
-    include = include_statuses if include_statuses is not None else ACTIVE_STATUSES
     client = GitHubClient(token=token)
-    written: list[Path] = []
-
+    datasets: list[dict[str, Any]] = []
     for item in client.project_items(org, project_number):
-        content = item.get("content") or {}
-        if content.get("__typename") != "Issue":
+        issue = item.get("content") or {}
+        if issue.get("__typename") != "Issue":
             continue  # drafts / PRs are skipped
-        status, status_changed_at = _status_from_item(item)
-
-        # Include issues in active columns, plus issues whose most recent
-        # transition carried them into (or out of) Done since our last pull —
-        # those matter for the biweekly report. We recognize "out of Done" by
-        # status_history in the existing snapshot.
-        snapshot_path = data_dir / f"{_slug(content)}.json"
-        existing: dict[str, Any] | None = None
-        if snapshot_path.exists():
-            existing = json.loads(snapshot_path.read_text(encoding="utf-8"))
-
-        prev_status = (
-            existing.get("current_status") if existing else None
-        )
-        is_active = status in include
-        is_recent_done_transition = (
-            status == "Done" and prev_status in include
-        ) or (
-            prev_status == "Done" and status in include
-        )
-
-        if not (is_active or is_recent_done_transition):
+        status, changed_at = _status_from_item(item)
+        recent_done = status == "Done" and changed_at and datetime.fromisoformat(changed_at) > since
+        if status not in ACTIVE_STATUSES and not recent_done:
             continue
-
-        owner, name = content["repository"]["nameWithOwner"].split("/", 1)
-        comments = client.issue_comments(owner, name, content["number"])
-        snapshot = merge_snapshot(existing, content, comments, status, status_changed_at)
-        _write_atomic(snapshot_path, snapshot)
-        written.append(snapshot_path)
-
-    return written
+        owner, name = issue["repository"]["nameWithOwner"].split("/", 1)
+        comments, transitions = client.issue_history(owner, name, issue["number"], project_number)
+        datasets.append(
+            {
+                "issue": {
+                    "number": issue["number"],
+                    "title": issue["title"],
+                    "url": issue["url"],
+                    "state": issue["state"],
+                    "author": (issue.get("author") or {}).get("login"),
+                    "created_at": issue["createdAt"],
+                    "repository": issue["repository"]["nameWithOwner"],
+                    "labels": [n["name"] for n in issue["labels"]["nodes"]],
+                    "assignees": [n["login"] for n in issue["assignees"]["nodes"]],
+                    "body": issue["body"],
+                },
+                "status": status,
+                # When the Status field last changed. Timeline events lag by minutes, so
+                # a very recent move may be missing from `transitions`; this fills the gap.
+                "status_changed_at": changed_at,
+                "transitions": transitions,
+                "comments": comments,
+            }
+        )
+    return {
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "since": since.isoformat(timespec="seconds"),
+        "board": f"{org}/projects/{project_number}",
+        "datasets": datasets,
+    }

@@ -1,8 +1,8 @@
-"""Render the cycle's snapshots plus the Claude digest into one self-contained HTML page.
+"""Render the fetched board plus the Claude digest into one self-contained HTML page.
 
 Layout: board (who is in which column) → needs attention → one collapsible card per
 dataset (title, timeline, owner line; expand for progress/blockers, post-mortem for
-finished datasets, raw activity). All facts here come from the snapshots; only the
+finished datasets, raw activity). All facts here come from the board; only the
 bullet text comes from the digest.
 """
 import html as H
@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Any
 
-from .digest import Digest, dt, window_start
+from .digest import Digest, dt
 
 COLLABORATORS = {"CellMap", "FuncEWOrm", "eFIB-SEM SR"}
 STAGES = [
@@ -22,36 +22,40 @@ STAGES = [
     ("Done", "DONE"),
 ]
 COLUMNS = [s for s, _ in STAGES]
+# Earlier names of today's columns; timeline events keep the name in use at the time.
+RENAMED = {"Alignment": "Assembly", "R&D": "Advanced Processing"}
 
 
 def _css(stage: str) -> str:
     return stage.lower().replace(" ", "-")
 
 
-def facts(snap: dict[str, Any], start: datetime | None) -> dict[str, Any]:
+def facts(snap: dict[str, Any], start: datetime) -> dict[str, Any]:
     """Everything the page shows about a dataset that is not narrative."""
     issue = snap["issue"]
     body = issue["body"] or ""
     owner = re.search(r'"owner"\s*:\s*"([^"]+)"', body)
     # First time each column was entered; later re-entries (QC bouncing) are ignored.
     entered: dict[str, datetime] = {}
-    for t in snap["status_history"]:
-        entered.setdefault(t["to"], dt(t.get("changed_at") or t["detected_at"]))
+    for t in snap["transitions"]:
+        entered.setdefault(RENAMED.get(t["to"], t["to"]), dt(t["at"]))
+    if snap.get("status_changed_at"):
+        entered.setdefault(snap["status"], dt(snap["status_changed_at"]))
     preview = None
     for src in [body] + [c["body"] or "" for c in snap["comments"]]:
         if m := re.search(r"\[imaging_preview\]\((http[^)\s]+)\)", src):
             preview = m.group(1)
-    in_window = [c for c in snap["comments"] if start is None or dt(c["createdAt"]) > start]
+    in_window = [c for c in snap["comments"] if dt(c["createdAt"]) > start]
     return {
         "number": issue["number"],
         "title": issue["title"],
         "url": issue["url"],
-        "status": snap["current_status"],
+        "status": snap["status"],
         "assignees": issue["assignees"],
         "owner": owner.group(1) if owner else "unknown",
         "collab": next((l for l in issue["labels"] if l in COLLABORATORS), "unknown"),
         "entered": entered,
-        "new": snap["previous_last_pull_at"] is None,
+        "new": min(entered.values(), default=dt(issue["created_at"])) > start,
         "preview": preview,
         "in_window": in_window,
         "last_activity": max(
@@ -81,7 +85,7 @@ def inline_md(s: str) -> str:
     return re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2">\1</a>', s)
 
 
-def timeline(d: dict[str, Any], start: datetime | None) -> str:
+def timeline(d: dict[str, Any], start: datetime) -> str:
     """IM → ASM → REV → AP → DONE. Everything left of the current column and every
     column ever entered is coloured; the current one is filled; first-entry date
     below (bold if it happened this cycle)."""
@@ -92,7 +96,7 @@ def timeline(d: dict[str, Any], start: datetime | None) -> str:
         label = "&nbsp;"
         if date := d["entered"].get(stage):
             label = fmt(date)
-            if start is None or date > start:
+            if date > start:
                 label = f"<b>{label}</b>"
         out.append(f'<span class="stage {_css(stage)} {state}"><i>{short}</i><small>{label}</small></span>')
     return '<div class="tl">' + '<span class="arrow">→</span>'.join(out) + "</div>"
@@ -115,7 +119,7 @@ def _bullets(items: list[str]) -> str:
     return "".join(f"<li>{inline_md(i)}</li>" for i in items)
 
 
-def card(d: dict[str, Any], digest: Digest, start: datetime | None, last: datetime, flagged: set[int]) -> str:
+def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, flagged: set[int]) -> str:
     n = digest.datasets.get(d["number"])
     prog = _bullets(n.progress) if n and n.progress else '<li class="muted">No progress reported.</li>'
     blk = _bullets(n.blockers) if n else ""
@@ -151,14 +155,14 @@ def card(d: dict[str, Any], digest: Digest, start: datetime | None, last: dateti
 </details>"""
 
 
-def board(cycle: list[dict[str, Any]], flagged: set[int]) -> str:
-    counts = Counter(d["status"] for d in cycle)
+def board(ds: list[dict[str, Any]], flagged: set[int]) -> str:
+    counts = Counter(d["status"] for d in ds)
     cols = []
     for c in COLUMNS:
         chips = "".join(
             f'<a class="chip {"flagged" if d["number"] in flagged else ""}" href="#ds-{d["number"]}" title="{esc(d["title"])}">'
             f'{"<b>!</b> " if d["number"] in flagged else ""}{esc(d["title"].removeprefix("jrc_"))}{" <em>new</em>" if d["new"] else ""}</a>'
-            for d in cycle
+            for d in ds
             if d["status"] == c
         )
         cols.append(f'<div class="col {_css(c)}"><h5>{esc(c)} <span class="n">{counts.get(c, 0)}</span></h5>{chips}</div>')
@@ -236,18 +240,17 @@ addEventListener('hashchange',openHash);openHash();
 """
 
 
-def render(cycle: list[dict[str, Any]], digest: Digest) -> str:
-    start = window_start(cycle)
-    issues_url = f"https://github.com/{cycle[0]['issue']['repository']}/issues"
-    last = max(dt(s["last_pull_at"]) for s in cycle)
-    ds = sorted((facts(s, start) for s in cycle), key=lambda d: (COLUMNS.index(d["status"]), d["number"]))
+def render(fetched: dict[str, Any], digest: Digest) -> str:
+    """`fetched` is the board.json dict written by fetch."""
+    start, last = dt(fetched["since"]), dt(fetched["fetched_at"])
+    issues_url = f"https://github.com/{fetched['datasets'][0]['issue']['repository']}/issues"
+    ds = sorted((facts(s, start) for s in fetched["datasets"]), key=lambda d: (COLUMNS.index(d["status"]), d["number"]))
     by_num = {d["number"]: d for d in ds}
     flagged = {a.number for a in digest.attention}
-    period = f"{fmt(start)} → " if start else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FIB-SEM digest · {last:%Y-%m-%d}</title><style>{CSS}</style></head><body><main>
 <div class="top"><h1>FIB-SEM reconstruction digest</h1>
-<span class="muted">{period}{last:%b %-d, %Y} · <a href="{esc(issues_url)}">issues</a></span></div>
+<span class="muted">{fmt(start)} → {last:%b %-d, %Y} · <a href="{esc(issues_url)}">issues</a></span></div>
 
 <h2>Board</h2>
 <div class="board">{board(ds, flagged)}</div>

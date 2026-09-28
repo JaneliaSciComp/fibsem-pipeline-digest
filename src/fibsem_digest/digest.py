@@ -1,9 +1,9 @@
-"""Turn the current cycle's snapshots into a short narrative digest via `claude -p`.
+"""Turn a fetched board into a short narrative digest via `claude -p`.
 
-Everything that can be computed from the snapshots (board position, timeline, owner,
-activity) is left to `render`; Claude only supplies what needs judgement: what needs
-attention, per-dataset progress and blockers, and a post-mortem for datasets that just
-reached Done. The result is validated JSON (see `Digest`).
+Everything that can be computed from the board (column, timeline, owner, activity) is
+left to `render`; Claude only supplies what needs judgement: what needs attention,
+per-dataset progress and blockers, and a post-mortem for datasets that just reached
+Done. The result is validated JSON (see `Digest`).
 """
 import json
 import re
@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -22,8 +21,7 @@ about FIB-SEM dataset reconstruction. On stdin you get a JSON array, one element
 dataset, with: number, title, status (board column: Imaging / Assembly / Review / \
 Advanced Processing / Done), labels, assignees, description, window_start, and comments \
 (author, date, text, in_window). The reporting window is everything with in_window=true \
-(everything after window_start; the whole history if window_start is null). Older \
-comments are context only and may be truncated.
+(everything after window_start). Older comments are context only and may be truncated.
 
 Return ONLY a JSON object, no prose, no code fence, with exactly these keys:
 
@@ -75,36 +73,12 @@ class Digest(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Cycle selection and cleaning
+# Cleaning
 # --------------------------------------------------------------------------- #
 
 
 def dt(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
-
-
-def load_cycle(data_dir: Path) -> list[dict[str, Any]]:
-    """Snapshots touched by the most recent fetch: the datasets this cycle reports on.
-
-    Done datasets are fetched once more when they finish and never again, so they appear
-    in exactly one cycle.
-    """
-    snaps = [
-        json.loads(p.read_text(encoding="utf-8"))
-        for p in sorted(data_dir.glob("*.json"))
-        if not p.name.startswith(".")
-    ]
-    if not snaps:
-        return []
-    latest = max(s["last_pull_at"] for s in snaps)[:10]
-    # ponytail: "same fetch" = same calendar day; good enough for a biweekly cadence.
-    return [s for s in snaps if s["last_pull_at"][:10] == latest]
-
-
-def window_start(cycle: list[dict[str, Any]]) -> datetime | None:
-    """Start of the reporting window: the previous fetch. None on the very first cycle."""
-    prev = [s["previous_last_pull_at"] for s in cycle if s["previous_last_pull_at"]]
-    return dt(min(prev)) if prev else None
 
 
 _JUNK = [
@@ -127,14 +101,14 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def clean(snap: dict[str, Any], start: datetime | None, older_chars: int = 400) -> dict[str, Any]:
-    """The subset of a snapshot worth sending to Claude."""
+def clean(snap: dict[str, Any], start: datetime, older_chars: int = 400) -> dict[str, Any]:
+    """The subset of a dataset worth sending to Claude."""
     issue = snap["issue"]
-    done = snap["current_status"] == "Done"
+    done = snap["status"] == "Done"
     comments = []
     for c in snap["comments"]:
         text = clean_text(c["body"] or "")
-        in_window = start is None or dt(c["createdAt"]) > start
+        in_window = dt(c["createdAt"]) > start
         if not in_window and not done and len(text) > older_chars:
             text = text[:older_chars] + " …"
         comments.append(
@@ -148,11 +122,11 @@ def clean(snap: dict[str, Any], start: datetime | None, older_chars: int = 400) 
     return {
         "number": issue["number"],
         "title": issue["title"],
-        "status": snap["current_status"],
+        "status": snap["status"],
         "labels": issue["labels"],
         "assignees": issue["assignees"],
         "description": clean_text(issue["body"] or ""),
-        "window_start": start.isoformat() if start else None,
+        "window_start": start.isoformat(),
         "comments": comments,
     }
 
@@ -212,7 +186,7 @@ def parse_digest(text: str) -> Digest:
     return Digest.model_validate_json(text[start : end + 1])
 
 
-def make_digest(cycle: list[dict[str, Any]]) -> Digest:
-    start = window_start(cycle)
-    payload = json.dumps([clean(s, start) for s in cycle], indent=1, ensure_ascii=False)
+def make_digest(board: dict[str, Any]) -> Digest:
+    start = dt(board["since"])
+    payload = json.dumps([clean(s, start) for s in board["datasets"]], indent=1, ensure_ascii=False)
     return parse_digest(run_claude(PROMPT, payload))
