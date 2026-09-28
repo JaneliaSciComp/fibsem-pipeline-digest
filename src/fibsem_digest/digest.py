@@ -88,6 +88,7 @@ _JUNK = [
     (re.compile(r"<img[^>]*>"), "[image]"),
     (re.compile(r"<[^>]+>"), ""),
     (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),  # links: keep the text, drop the URL
+    (re.compile(r"https?://\S+"), "[link]"),  # bare URLs (often huge neuroglancer states)
     (re.compile(r"^On .{0,120} wrote:\s*$.*", re.S | re.M), ""),  # quoted e-mail reply
     (re.compile(r"^>.*$", re.M), ""),
     (re.compile(r"[ \t]+$", re.M), ""),

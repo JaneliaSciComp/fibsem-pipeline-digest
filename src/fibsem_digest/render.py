@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Any
 
-from .digest import Digest, dt
+from .digest import Digest, clean_text, dt
 
 COLLABORATORS = {"CellMap", "FuncEWOrm", "eFIB-SEM SR"}
 STAGES = [
@@ -105,8 +105,8 @@ def timeline(d: dict[str, Any], start: datetime) -> str:
 def activity(d: dict[str, Any]) -> str:
     rows = []
     for c in d["in_window"]:
-        body = c["body"] or ""
-        first = (re.sub(r"<[^>]+>", "", body).strip().splitlines() or [""])[0]
+        body = clean_text(c["body"] or "")
+        first = (body.splitlines() or [""])[0]
         author = (c.get("author") or {}).get("login", "?")
         rows.append(
             f'<tr><td class="muted">{c["createdAt"][:10]}</td><td><span class="who">{esc(author)}</span></td>'

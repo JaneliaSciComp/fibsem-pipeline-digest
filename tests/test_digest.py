@@ -39,9 +39,9 @@ def board(*datasets, since="2026-09-01T00:00:00+00:00", fetched="2026-09-16T09:0
 
 
 def test_clean():
-    text = "Hi <b>there</b> ![img](x.png)\n> quoted\nsee [docs](http://u)\n```\ncode\n```\n\n\n\nOn Mon, X wrote:\n> old"
+    text = "Hi <b>there</b> ![img](x.png)\n> quoted\nsee [docs](http://u) or http://ng/#!%7B%22x%22\n```\ncode\n```\n\n\n\nOn Mon, X wrote:\n> old"
     out = D.clean_text(text)
-    assert out == "Hi there [image]\n\nsee docs\n[code]", repr(out)
+    assert out == "Hi there [image]\n\nsee docs or [link]\n[code]", repr(out)
 
     s = snap(1, "Assembly", [("Assembly", "2026-08-20T00:00:00+00:00")],
              comments=[("2026-08-10T00:00:00+00:00", "x" * 1000), ("2026-09-10T00:00:00+00:00", "y" * 1000)])
@@ -115,7 +115,7 @@ def test_render():
     assert 'advanced-processing "><i>AP</i>' in tl and 'done "><i>DONE</i>' in tl
 
     done = snap(8, "Done", [("Review", "2026-08-20T00:00:00+00:00"), ("Done", "2026-09-12T00:00:00+00:00")],
-                comments=[("2026-09-11T00:00:00+00:00", "signed off")])
+                comments=[("2026-09-11T00:00:00+00:00", "signed off, see [state](http://ng/1) and http://ng/2")])
     fresh = snap(9, "Imaging", [("Imaging", "2026-09-05T00:00:00+00:00")], created="2026-09-04T00:00:00+00:00")
     assert facts(fresh, START)["new"] is True
     # Renamed columns map to today's names; a move too recent for the timeline uses the field timestamp.
@@ -136,7 +136,8 @@ def test_render():
     assert '<a class="chip flagged" href="#ds-7"' in html and '<a class="chip " href="#ds-8"' in html
     assert html.count("<em>new</em>") == 1 and html.count('class="newtag"') == 1
     assert html.count('class="pm"') == 1 and "What went well" in html
-    assert "waiting on <strong>QC</strong>" in html and "b1" in html and "signed off" in html
+    assert "waiting on <strong>QC</strong>" in html and "b1" in html
+    assert "signed off, see state and [link]" in html and "http://ng/1" not in html and "http://ng/2" not in html
     assert html.index("ds-9") < html.index("ds-7") < html.index("ds-8"), "sorted by column"
     assert "footer" not in html
 
