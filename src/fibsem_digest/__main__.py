@@ -1,34 +1,30 @@
 """CLI entry point.
 
-Default (no subcommand) runs the full pipeline: fetch → summarize.
-Subcommands are available for running individual stages.
+Default (no subcommand) runs the full pipeline: fetch → digest → render, into one new
+run directory out/<timestamp>/ holding board.json, digest.json and digest.html.
 """
+import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
 from dotenv import load_dotenv
 
-from .fetch import GitHubError, fetch_all
-from .summarize import (
-    INTERNAL_FILES,
-    changed_since_last_summary,
-    clear_pending_run,
-    load_pending_run,
-    output_path_for,
-    record_summarized,
-    save_pending_run,
-    summarize_biweekly,
-    summarize_dataset,
-)
+from .digest import Digest, dt, make_digest
+from .fetch import GitHubError, fetch_board
+from .render import render
 
-
-# Repo-root-relative output locations. The CLI is invoked from the project
-# directory (that's where `uv run` lives), so this keeps paths predictable.
-DEFAULT_DATA_DIR = Path("data")
 DEFAULT_OUT_DIR = Path("out")
+DEFAULT_WINDOW = timedelta(days=14)
+
+_out_dir = click.option("--out-dir", type=click.Path(path_type=Path), default=DEFAULT_OUT_DIR, show_default=True)
+_since = click.option(
+    "--since", type=click.DateTime(), default=None,
+    help="Start of the reporting window. Default: the previous run's fetch time, else 14 days ago.",
+)
+_run_dir = click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 
 
 def _load_config() -> tuple[str, str, int]:
@@ -36,148 +32,85 @@ def _load_config() -> tuple[str, str, int]:
     load_dotenv()
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if not token:
-        click.echo(
-            "ERROR: GITHUB_TOKEN is not set. Copy .env.example to .env and fill it in.",
-            err=True,
-        )
+        click.echo("ERROR: GITHUB_TOKEN is not set. Copy .env.example to .env and fill it in.", err=True)
         sys.exit(2)
     org = os.environ.get("FIBSEM_ORG", "JaneliaSciComp").strip()
-    project_number = int(os.environ.get("FIBSEM_PROJECT_NUMBER", "9"))
-    return token, org, project_number
+    return token, org, int(os.environ.get("FIBSEM_PROJECT_NUMBER", "9"))
+
+
+def default_since(out_dir: Path, now: datetime) -> datetime:
+    """When the previous run fetched, or 14 days ago if there is none."""
+    previous = sorted(out_dir.glob("*/board.json"))
+    if previous:
+        return dt(json.loads(previous[-1].read_text(encoding="utf-8"))["fetched_at"])
+    return now - DEFAULT_WINDOW
+
+
+def _board(run_dir: Path) -> dict:
+    return json.loads((run_dir / "board.json").read_text(encoding="utf-8"))
+
+
+def _write(run_dir: Path, name: str, text: str) -> Path:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / name
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 @click.group(invoke_without_command=True)
 @click.pass_context
 def cli(ctx: click.Context) -> None:
-    """FIBSEM project summarizer.
-
-    Run with no subcommand to execute the full pipeline (fetch then summarize).
-    """
+    """FIB-SEM reconstruction digest: fetch the board, digest it with Claude, render HTML."""
     if ctx.invoked_subcommand is None:
-        ctx.invoke(fetch)
-        ctx.invoke(summarize)
+        run_dir = ctx.invoke(fetch)
+        ctx.invoke(digest, run_dir=run_dir)
 
 
 @cli.command()
-@click.option(
-    "--data-dir",
-    type=click.Path(path_type=Path),
-    default=DEFAULT_DATA_DIR,
-    show_default=True,
-    help="Directory to write JSON snapshots into.",
-)
-def fetch(data_dir: Path) -> None:
-    """Pull GitHub issues from the project board into JSON snapshots."""
+@_out_dir
+@_since
+def fetch(out_dir: Path, since: datetime | None) -> Path:
+    """Pull the board from GitHub into out/<timestamp>/board.json."""
     token, org, project_number = _load_config()
-    click.echo(f"Fetching items from {org}/projects/{project_number}...")
+    now = datetime.now(timezone.utc)
+    since = since.replace(tzinfo=timezone.utc) if since and since.tzinfo is None else since
+    since = since or default_since(out_dir, now)
+    click.echo(f"Fetching {org}/projects/{project_number}, window since {since:%Y-%m-%d %H:%M} UTC...")
     try:
-        written = fetch_all(data_dir, org, project_number, token)
+        board = fetch_board(org, project_number, token, since)
     except GitHubError as e:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(1)
-    click.echo(f"Wrote/updated {len(written)} snapshot(s) in {data_dir}/.")
+    run_dir = out_dir / now.astimezone().strftime("%Y-%m-%d_%H-%M-%S")
+    _write(run_dir, "board.json", json.dumps(board, indent=1, ensure_ascii=False))
+    click.echo(f"Wrote {len(board['datasets'])} dataset(s) to {run_dir / 'board.json'}")
+    return run_dir
 
 
 @cli.command()
-@click.option(
-    "--data-dir",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=DEFAULT_DATA_DIR,
-    show_default=True,
-)
-@click.option(
-    "--out-dir",
-    type=click.Path(path_type=Path),
-    default=DEFAULT_OUT_DIR,
-    show_default=True,
-)
-def summarize(data_dir: Path, out_dir: Path) -> None:
-    """Run claude -p to produce per-dataset and aggregated markdown summaries.
+@_run_dir
+def digest(run_dir: Path) -> None:
+    """Ask claude -p for the narrative digest of RUN_DIR/board.json, then render it."""
+    board = _board(run_dir)
+    click.echo(f"Digesting {len(board['datasets'])} dataset(s) via claude -p...")
+    d = make_digest(board)
+    _write(run_dir, "digest.json", d.model_dump_json(indent=2))
+    click.echo(f"Wrote {_write(run_dir, 'digest.html', render(board, d))}")
 
-    Each reporting cycle writes into a fresh timestamped subdirectory of `out/` so prior
-    cycles are preserved untouched. All markdown files (per-dataset cumulative reports
-    plus the aggregated biweekly report) sit flat in that directory.
 
-    If a previous run left datasets unsummarized, re-running resumes into that same
-    directory: only the missing per-dataset summaries are generated, and the biweekly
-    report is rewritten to cover the whole cycle, not just the retried datasets.
-    """
-    snapshots = sorted(
-        p for p in data_dir.glob("*.json") if p.name not in INTERNAL_FILES
-    )
-    if not snapshots:
-        click.echo(f"No snapshots in {data_dir}/. Run `fetch` first.", err=True)
-        sys.exit(1)
-
-    to_process = changed_since_last_summary(snapshots, data_dir)
-    skipped = len(snapshots) - len(to_process)
-    if skipped:
-        click.echo(f"Skipping {skipped} dataset(s) untouched since the last summary.")
-
-    pending = load_pending_run(data_dir)
-    if pending is not None:
-        # Resume the unfinished cycle, folding in anything that changed since.
-        run_dir, cycle = pending
-        known = {p.name for p in cycle}
-        cycle = cycle + [p for p in to_process if p.name not in known]
-        click.echo(f"Resuming unfinished run in {run_dir}/ ({len(cycle)} in cycle).")
-    else:
-        if not to_process:
-            click.echo("Nothing new to summarize.")
-            return
-        run_dir = out_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        cycle = to_process
-
-    run_dir.mkdir(parents=True, exist_ok=True)
-    save_pending_run(data_dir, run_dir, cycle)
-
-    # An existing output file is the done-marker, so a resumed run redoes only the gaps
-    # (and regenerates anything whose .md was deleted by hand).
-    todo = [p for p in cycle if not output_path_for(p, run_dir).exists()]
-    failed: list[Path] = []
-    if todo:
-        click.echo(f"Summarizing {len(todo)} dataset(s) via claude -p into {run_dir}/")
-    for snap in todo:
-        try:
-            written = summarize_dataset(snap, run_dir)
-        except RuntimeError as e:
-            click.echo(f"  {snap.name} FAILED: {e}", err=True)
-            failed.append(snap)
-            continue
-        record_summarized([snap], data_dir)
-        click.echo(f"  {snap.name} -> {written.name}")
-
-    available = [p for p in cycle if output_path_for(p, run_dir).exists()]
-    if not available:
-        click.echo("No datasets summarized; no biweekly report written.", err=True)
-        sys.exit(1)
-
-    biweekly_path = run_dir / "biweekly.md"
-    click.echo(f"  aggregating biweekly report over {len(available)} dataset(s)")
-    try:
-        summarize_biweekly(available, biweekly_path)
-    except RuntimeError as e:
-        click.echo(f"  biweekly report FAILED: {e}", err=True)
-        click.echo("Re-run to rebuild it; per-dataset summaries are kept.", err=True)
-        sys.exit(1)
-
-    click.echo(f"Wrote summaries under {run_dir}/.")
-    if failed:
-        click.echo(
-            f"{len(failed)} dataset(s) still failing; re-run to retry just those and "
-            "refresh the biweekly report over the full cycle.",
-            err=True,
-        )
-        sys.exit(1)
-
-    clear_pending_run(data_dir)
+@cli.command("render")
+@_run_dir
+def render_cmd(run_dir: Path) -> None:
+    """Re-render RUN_DIR/digest.html from its board.json and digest.json (no Claude call)."""
+    d = Digest.model_validate_json((run_dir / "digest.json").read_text(encoding="utf-8"))
+    click.echo(f"Wrote {_write(run_dir, 'digest.html', render(_board(run_dir), d))}")
 
 
 if __name__ == "__main__":
     try:
         cli()
     except KeyboardInterrupt:
-        click.echo("\nInterrupted. Re-run to resume from where this left off.", err=True)
+        click.echo("\nInterrupted.", err=True)
         sys.exit(130)
     except Exception as e:  # noqa: BLE001 - top-level guard: report, don't traceback
         click.echo(f"ERROR: {type(e).__name__}: {e}", err=True)
