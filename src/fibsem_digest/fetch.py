@@ -48,6 +48,7 @@ query ($org: String!, $project: Int!, $after: String) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
+                updatedAt
                 field { ... on ProjectV2SingleSelectField { name } }
               }
             }
@@ -176,11 +177,12 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _status_from_item(item: dict[str, Any]) -> str | None:
+def _status_from_item(item: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return (status, when the Status field was last changed on the board)."""
     for fv in item.get("fieldValues", {}).get("nodes", []):
         if fv and fv.get("field", {}).get("name") == "Status":
-            return fv.get("name")
-    return None
+            return fv.get("name"), fv.get("updatedAt")
+    return None, None
 
 
 def _slug(issue: dict[str, Any]) -> str:
@@ -194,10 +196,13 @@ def merge_snapshot(
     issue: dict[str, Any],
     comments: list[dict[str, Any]],
     status: str | None,
+    status_changed_at: str | None = None,
 ) -> dict[str, Any]:
     """Merge newly fetched issue data into the previous snapshot.
 
     Returns the new snapshot dict. `existing` may be None on a first pull.
+    `status_changed_at` is when the board's Status field was actually changed (from
+    GitHub), as opposed to `detected_at`, which is when this fetch noticed it.
     """
     detected = _now()
     previous_last_pull = existing.get("last_pull_at") if existing else None
@@ -256,7 +261,12 @@ def merge_snapshot(
     prev_status = status_history[-1]["to"] if status_history else None
     if status != prev_status:
         status_history.append(
-            {"from": prev_status, "to": status, "detected_at": detected}
+            {
+                "from": prev_status,
+                "to": status,
+                "changed_at": status_changed_at,
+                "detected_at": detected,
+            }
         )
 
     return {
@@ -317,7 +327,7 @@ def fetch_all(
         content = item.get("content") or {}
         if content.get("__typename") != "Issue":
             continue  # drafts / PRs are skipped
-        status = _status_from_item(item)
+        status, status_changed_at = _status_from_item(item)
 
         # Include issues in active columns, plus issues whose most recent
         # transition carried them into (or out of) Done since our last pull —
@@ -343,7 +353,7 @@ def fetch_all(
 
         owner, name = content["repository"]["nameWithOwner"].split("/", 1)
         comments = client.issue_comments(owner, name, content["number"])
-        snapshot = merge_snapshot(existing, content, comments, status)
+        snapshot = merge_snapshot(existing, content, comments, status, status_changed_at)
         _write_atomic(snapshot_path, snapshot)
         written.append(snapshot_path)
 
