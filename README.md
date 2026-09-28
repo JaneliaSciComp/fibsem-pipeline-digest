@@ -1,9 +1,6 @@
 # FIBSEM Project Digest
 
-Fetches discussion threads from the FIB-SEM reconstruction tracking board (a private GitHub Projects v2 board) into local JSON snapshots, then asks `claude -p` to turn those snapshots into Markdown summaries:
-
-- a **per-dataset cumulative** document covering reconstruction steps (methods-ready) and an internal process retrospective, and
-- a **single aggregated biweekly status report** for the internal meeting, covering activity since the previous pull.
+Fetches discussion threads from the FIB-SEM reconstruction tracking board (a private GitHub Projects v2 board) into local JSON snapshots, asks `claude -p` for a short narrative digest, and renders a single self-contained HTML status page for the internal biweekly meeting.
 
 Pulls are incremental: re-running only fetches what changed, and edits to previously seen comments are tracked in the snapshot.
 
@@ -56,39 +53,34 @@ No separate Anthropic API key is handled by this tool — `claude -p` uses your 
 uv run -m fibsem_digest
 ```
 
-This runs `fetch` and then `summarize`, writing (all gitignored):
+This runs `fetch` → `digest` → `render`, writing (all gitignored):
 
 - `data/<repo>__<num>.json` — raw snapshots (one per dataset, updated in place).
-- `out/<YYYY-MM-DD_HH-MM-SS>/<num>_<title>.md` — per-dataset methods + retrospective.
-- `out/<YYYY-MM-DD_HH-MM-SS>/biweekly.html` — single aggregated status report (the raw `biweekly.md` it was rendered from sits next to it).
+- `out/<YYYY-MM-DD_HH-MM-SS>/digest.json` — Claude's narrative for the cycle (attention items, per-dataset progress/blockers, post-mortems).
+- `out/<YYYY-MM-DD_HH-MM-SS>/digest.html` — the report. Open it in a browser or attach it; styles and scripts are inlined.
 
-Each summarize run creates a fresh timestamped directory under `out/`, so prior runs
-are preserved untouched. All Markdown files for a run sit flat in that directory.
+A cycle covers the datasets touched by the most recent fetch, and the reporting window is everything since the fetch before that. A dataset that reaches **Done** is fetched once more (for the cycle it finished in), gets a post-mortem, and then drops out.
 
-Datasets whose snapshot hasn't changed since they were last summarized (no new
-comments, status transitions, or body edits) are skipped — tracked via
-`data/.summarize_state.json`. In particular, once a dataset reaches **Done** it's
-picked up once (for the report covering the period it transitioned in) and then
-naturally drops out of future runs, since `fetch` stops updating it and its snapshot
-stays unchanged.
+Before calling Claude the snapshots are cleaned: issue-body boilerplate, HTML, images, quoted e-mail replies and code blocks are stripped, link URLs are dropped, and comments before the window are truncated (except for Done datasets, whose whole thread feeds the post-mortem). Claude only writes the bullets; column, timeline, owner, collaborator, assignee, activity and preview links are computed from the snapshots.
 
 ### Stage-by-stage
 
 ```sh
-uv run -m fibsem_digest fetch         # pull/update JSON snapshots only
-uv run -m fibsem_digest summarize     # produce Markdown from existing snapshots
+uv run -m fibsem_digest fetch                        # pull/update JSON snapshots only
+uv run -m fibsem_digest digest                       # claude -p → out/<ts>/digest.json + digest.html
+uv run -m fibsem_digest render out/<ts>              # re-render digest.html from an existing digest.json
 ```
 
-### Render any summary to HTML
+`render` is handy when tweaking the layout: it reuses the saved narrative and does not call Claude.
+
+### Self-check
 
 ```sh
-uv run -m fibsem_digest html out/2026-04-14_15-30-22/126_jrc_aphid-salivary-1.md
-# writes out/2026-04-14_15-30-22/126_jrc_aphid-salivary-1.html next to the input
+uv run tests/test_digest.py
 ```
 
-The biweekly report is rendered automatically; use this for per-dataset summaries. The output is a single self-contained file (styles inlined), so it can be attached or pasted anywhere.
-
 ## What gets fetched
+
 
 The tool walks every item on the board and keeps any issue whose column is one of **Imaging**, **Assembly**, **Review**, or **Advanced Processing** (exploratory R&D outside the normal pipeline — reported like the others, but not flagged as needing attention just for being quiet). It additionally keeps issues that just transitioned into or out of **Done** since the previous pull (so those moves show up in the biweekly report). Issues in **Cleaned Up** are ignored.
 
@@ -104,8 +96,8 @@ Each `data/*.json` looks roughly like:
   "issue": { "number": 42, "title": "...", "repository": "Janelia/foo", "..." : "..." },
   "current_status": "Review",
   "status_history": [
-    { "from": null, "to": "Imaging", "detected_at": "..." },
-    { "from": "Imaging", "to": "Assembly", "detected_at": "..." }
+    { "from": null, "to": "Imaging", "changed_at": "...", "detected_at": "..." },
+    { "from": "Imaging", "to": "Assembly", "changed_at": "...", "detected_at": "..." }
   ],
   "body_history": [{ "body": "...", "recorded_at": "..." }],
   "comments": [{ "id": "...", "author": "...", "body": "...", "createdAt": "...", "updatedAt": "..." }],
@@ -123,6 +115,8 @@ FIBSEM_ORG=SomeOtherOrg
 FIBSEM_PROJECT_NUMBER=12
 ```
 
-## Tuning the prompts
+## Tuning the prompt
 
-Both prompts are module-level constants near the top of `src/fibsem_digest/summarize.py` (`CUMULATIVE_PROMPT` and `BIWEEKLY_PROMPT`). Just edit them.
+The prompt is the `PROMPT` constant at the top of `src/fibsem_digest/digest.py`; the JSON it must return is the `Digest` model right below it. Layout and styling live in `src/fibsem_digest/render.py`.
+
+`changed_at` in `status_history` is when the Status field was changed on the board (from GitHub); `detected_at` is when the fetch noticed. Timelines use `changed_at` and fall back to `detected_at` for older snapshots.
