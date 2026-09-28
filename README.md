@@ -1,8 +1,8 @@
 # FIBSEM Project Digest
 
-Fetches discussion threads from the FIB-SEM reconstruction tracking board (a private GitHub Projects v2 board) into local JSON snapshots, asks `claude -p` for a short narrative digest, and renders a single self-contained HTML status page for the internal biweekly meeting.
+Fetches the FIB-SEM reconstruction tracking board (a private GitHub Projects v2 board) with each dataset's full discussion thread and column history, asks `claude -p` for a short narrative digest, and renders a single self-contained HTML status page for the internal biweekly meeting.
 
-Pulls are incremental: re-running only fetches what changed, and edits to previously seen comments are tracked in the snapshot.
+Every run is self-contained: it pulls everything fresh from GitHub and writes one run directory. There is no local state between runs.
 
 ## Setup
 
@@ -53,25 +53,25 @@ No separate Anthropic API key is handled by this tool — `claude -p` uses your 
 uv run -m fibsem_digest
 ```
 
-This runs `fetch` → `digest` → `render`, writing (all gitignored):
+This runs `fetch` → `digest` → `render`, writing into `out/<YYYY-MM-DD_HH-MM-SS>/` (gitignored):
 
-- `data/<repo>__<num>.json` — raw snapshots (one per dataset, updated in place).
-- `out/<YYYY-MM-DD_HH-MM-SS>/digest.json` — Claude's narrative for the cycle (attention items, per-dataset progress/blockers, post-mortems).
-- `out/<YYYY-MM-DD_HH-MM-SS>/digest.html` — the report. Open it in a browser or attach it; styles and scripts are inlined.
+- `board.json` — everything fetched: issue, comments, column moves with their timestamps.
+- `digest.json` — Claude's narrative (attention items, per-dataset progress/blockers, post-mortems).
+- `digest.html` — the report. Open it in a browser or attach it; styles and scripts are inlined.
 
-A cycle covers the datasets touched by the most recent fetch, and the reporting window is everything since the fetch before that. A dataset that reaches **Done** is fetched once more (for the cycle it finished in), gets a post-mortem, and then drops out.
+The reporting window starts at the previous run's fetch time (the newest `out/*/board.json`), or 14 days ago if there is none; override with `--since YYYY-MM-DD`. A run covers every dataset in an active column plus datasets moved to **Done** inside the window, which get a post-mortem and then drop out.
 
-Before calling Claude the snapshots are cleaned: issue-body boilerplate, HTML, images, quoted e-mail replies and code blocks are stripped, link URLs are dropped, and comments before the window are truncated (except for Done datasets, whose whole thread feeds the post-mortem). Claude only writes the bullets; column, timeline, owner, collaborator, assignee, activity and preview links are computed from the snapshots.
+Before calling Claude the threads are cleaned: issue-body boilerplate, HTML, images, quoted e-mail replies and code blocks are stripped, link URLs are dropped, and comments before the window are truncated (except for Done datasets, whose whole thread feeds the post-mortem). Claude only writes the bullets; column, timeline, owner, collaborator, assignee, activity and preview links are computed from `board.json`.
 
 ### Stage-by-stage
 
 ```sh
-uv run -m fibsem_digest fetch                        # pull/update JSON snapshots only
-uv run -m fibsem_digest digest                       # claude -p → out/<ts>/digest.json + digest.html
-uv run -m fibsem_digest render out/<ts>              # re-render digest.html from an existing digest.json
+uv run -m fibsem_digest fetch [--since 2026-09-16]   # GitHub → out/<ts>/board.json
+uv run -m fibsem_digest digest out/<ts>              # claude -p → digest.json + digest.html
+uv run -m fibsem_digest render out/<ts>              # re-render digest.html, no Claude call
 ```
 
-`render` is handy when tweaking the layout: it reuses the saved narrative and does not call Claude.
+`render` is handy when tweaking the layout; `digest` on an old run re-asks Claude about the same data (useful when tuning the prompt).
 
 ### Self-check
 
@@ -81,28 +81,29 @@ uv run tests/test_digest.py
 
 ## What gets fetched
 
+The tool walks every item on the board and keeps any issue whose column is one of **Imaging**, **Assembly**, **Review**, or **Advanced Processing** (exploratory R&D outside the normal pipeline — reported like the others, but not flagged as needing attention just for being quiet), plus issues moved to **Done** inside the window. Issues in **Cleaned Up** are ignored.
 
-The tool walks every item on the board and keeps any issue whose column is one of **Imaging**, **Assembly**, **Review**, or **Advanced Processing** (exploratory R&D outside the normal pipeline — reported like the others, but not flagged as needing attention just for being quiet). It additionally keeps issues that just transitioned into or out of **Done** since the previous pull (so those moves show up in the biweekly report). Issues in **Cleaned Up** are ignored.
+Column moves come from the issue timeline (`ProjectV2ItemStatusChangedEvent`), which records the column name in use at the time; `render.py` maps retired names (`Alignment`, `R&D`) onto today's. Timeline events can lag a few minutes behind the board, so the Status field's own `updatedAt` fills in the current column when its event is missing.
 
-## Snapshot shape (for reference)
-
-Each `data/*.json` looks roughly like:
+`board.json` looks roughly like:
 
 ```jsonc
 {
-  "schema_version": 1,
-  "last_pull_at": "2026-04-13T14:20:00+00:00",
-  "previous_last_pull_at": "2026-03-30T09:11:00+00:00",
-  "issue": { "number": 42, "title": "...", "repository": "Janelia/foo", "..." : "..." },
-  "current_status": "Review",
-  "status_history": [
-    { "from": null, "to": "Imaging", "changed_at": "...", "detected_at": "..." },
-    { "from": "Imaging", "to": "Assembly", "changed_at": "...", "detected_at": "..." }
-  ],
-  "body_history": [{ "body": "...", "recorded_at": "..." }],
-  "comments": [{ "id": "...", "author": "...", "body": "...", "createdAt": "...", "updatedAt": "..." }],
-  "edits": [{ "comment_id": "...", "old_body": "...", "new_body": "...", "detected_at": "..." }],
-  "deletions": []
+  "fetched_at": "2026-09-28T20:59:29+00:00",
+  "since": "2026-09-16T00:00:00+00:00",
+  "board": "JaneliaSciComp/projects/9",
+  "datasets": [
+    {
+      "issue": { "number": 42, "title": "...", "repository": "Janelia/foo", "labels": [], "assignees": [], "body": "..." },
+      "status": "Review",
+      "status_changed_at": "2026-09-08T10:00:00Z",
+      "transitions": [
+        { "from": null, "to": "Imaging", "at": "..." },
+        { "from": "Imaging", "to": "Assembly", "at": "..." }
+      ],
+      "comments": [{ "author": { "login": "..." }, "createdAt": "...", "body": "..." }]
+    }
+  ]
 }
 ```
 
@@ -118,5 +119,3 @@ FIBSEM_PROJECT_NUMBER=12
 ## Tuning the prompt
 
 The prompt is the `PROMPT` constant at the top of `src/fibsem_digest/digest.py`; the JSON it must return is the `Digest` model right below it. Layout and styling live in `src/fibsem_digest/render.py`.
-
-`changed_at` in `status_history` is when the Status field was changed on the board (from GitHub); `detected_at` is when the fetch noticed. Timelines use `changed_at` and fall back to `detected_at` for older snapshots.
