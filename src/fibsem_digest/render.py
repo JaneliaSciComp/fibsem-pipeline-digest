@@ -137,7 +137,7 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
         if d["preview"] else ""
     )
     mail = (
-        '<button class="mail" type="button" title="copy this card for an email">'
+        '<button class="mail" type="button" title="copy this card as an image for an e-mail (shift-click: plain text)">'
         '<svg viewBox="0 0 24 16" width="18" height="12"><rect x="1" y="1" width="22" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/>'
         '<path d="M1 2l11 8 11-8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>'
     )
@@ -168,8 +168,8 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
 
 
 # --------------------------------------------------------------------------- #
-# Email version of a card: tables and inline styles only, since mail clients drop
-# stylesheets, grid/flex and <details>. Raw activity is appended as small grey text.
+# Email version of a card, rasterised to PNG in the browser (see JS). Inline styles only
+# so the SVG foreignObject renders it standalone. Raw activity is appended as small grey text.
 # --------------------------------------------------------------------------- #
 
 STAGE_COLOURS = {"Imaging": "#0ea5e9", "Assembly": "#8b5cf6", "Review": "#14b8a6", "Advanced Processing": "#f59e0b", "Done": "#22c55e"}
@@ -210,10 +210,8 @@ def mail_card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime
         f'<td>{esc(clean_text(c["body"] or "")[:400])}</td></tr>'
         for c in d["in_window"]
     )
-    links = f'<a href="{esc(d["url"])}" style="color:#2563eb">GitHub issue #{d["number"]}</a>'
-    if d["preview"]:
-        links += f' · <a href="{esc(d["preview"])}" style="color:#2563eb">imaging preview</a>'
-    return f"""<div style="font:14px/1.45 -apple-system,Helvetica,Arial,sans-serif;color:#1c1c1c;max-width:640px">
+    links = f'<span style="color:#2563eb">{esc(d["url"].removeprefix("https://"))}</span>'
+    return f"""<div style="font:14px/1.45 Helvetica,Arial,sans-serif;color:#1c1c1c;width:640px">
 <h2 style="margin:0;font-size:17px">{esc(d['title'])} <span style="color:#6b7280;font-weight:400;font-size:13px">#{d['number']}</span></h2>
 {_mail_timeline(d, start)}
 <p style="margin:4px 0;font-size:13px;color:#374151"><span style="color:#6b7280">Status</span> {esc(d['status'])} ·
@@ -309,12 +307,21 @@ const set=o=>document.querySelectorAll('.card').forEach(d=>d.open=o);
 document.getElementById('exp').onclick=()=>set(true);document.getElementById('col').onclick=()=>set(false);
 const openHash=()=>{const t=document.querySelector(location.hash||'#none');if(t&&t.classList.contains('card'))t.open=true};
 addEventListener('hashchange',openHash);openHash();
+const toPng=async html=>{
+  const wrap=document.body.appendChild(document.createElement('div'));
+  wrap.style.cssText='position:fixed;left:-9999px;top:0;width:664px;background:#fff;padding:12px';wrap.innerHTML=html;
+  const h=wrap.offsetHeight,clone=wrap.cloneNode(true);wrap.remove();clone.style.cssText='width:664px;background:#fff;padding:12px';
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="664" height="${h}"><foreignObject width="100%" height="100%">${new XMLSerializer().serializeToString(clone)}</foreignObject></svg>`;
+  const img=new Image();img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);await img.decode();
+  const c=document.createElement('canvas');c.width=664*2;c.height=h*2;const g=c.getContext('2d');g.scale(2,2);g.drawImage(img,0,0);
+  return new Promise(r=>c.toBlob(r,'image/png'));
+};
 document.querySelectorAll('button.mail').forEach(b=>b.onclick=async e=>{
   e.preventDefault();
   const html=b.closest('.card').querySelector('template.mail').innerHTML;
-  const tmp=document.body.appendChild(document.createElement('div'));tmp.innerHTML=html;const text=tmp.innerText;tmp.remove();
   try{
-    await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}),'text/plain':new Blob([text],{type:'text/plain'})})]);
+    if(e.shiftKey){const tmp=document.body.appendChild(document.createElement('div'));tmp.innerHTML=html;const text=tmp.innerText;tmp.remove();await navigator.clipboard.writeText(text)}
+    else await navigator.clipboard.write([new ClipboardItem({'image/png':toPng(html)})]);
     b.classList.add('ok');setTimeout(()=>b.classList.remove('ok'),1500);
   }catch(err){alert('Copy failed: '+err)}
 });

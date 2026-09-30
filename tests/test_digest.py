@@ -146,7 +146,7 @@ def test_render():
     m7 = next(m for m in mail if "#7</span>" in m).split("</template>")[0]
     assert 'class="' not in m7
     assert 'background:#8b5cf6">ASM' in m7 and 'color:#14b8a6">REV' in m7, "email timeline: current filled, reached outlined"
-    assert "http://ng/7" in m7 and "GitHub issue #7" in m7 and "b1" in m7 and "Raw GitHub activity" in m7
+    assert "x/7</span>" in m7 and "http://ng/7" not in m7 and "b1" in m7 and "Raw GitHub activity" in m7
     assert html.count('<button class="mail"') == 3
 
 
