@@ -140,6 +140,14 @@ def test_render():
     assert "signed off, see state and [link]" in html and "http://ng/1" not in html and "http://ng/2" not in html
     assert html.index("ds-9") < html.index("ds-7") < html.index("ds-8"), "sorted by column"
     assert "footer" not in html
+    # Email copy: one template per card, inline-styled, no page CSS classes, links kept, activity greyed.
+    mail = html.split('<template class="mail">')[1:]
+    assert len(mail) == 3
+    m7 = next(m for m in mail if "#7</span>" in m).split("</template>")[0]
+    assert 'class="' not in m7
+    assert 'background:#8b5cf6">ASM' in m7 and 'color:#14b8a6">REV' in m7, "email timeline: current filled, reached outlined"
+    assert "http://ng/7" in m7 and "GitHub issue #7" in m7 and "b1" in m7 and "Raw GitHub activity" in m7
+    assert html.count('<button class="mail"') == 3
 
 
 def test_cli_render():

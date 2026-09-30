@@ -63,6 +63,8 @@ The reporting window starts at the previous run's fetch time (the newest `out/*/
 
 Before calling Claude the threads are cleaned: issue-body boilerplate, HTML, images, quoted e-mail replies and code blocks are stripped, link URLs are dropped, and comments before the window are truncated (except for Done datasets, whose whole thread feeds the post-mortem). Claude only writes the bullets; column, timeline, owner, collaborator, assignee, activity and preview links are computed from `board.json`.
 
+The envelope icon next to a dataset title copies that card to the clipboard as e-mail-safe HTML (tables and inline styles; plain text as fallback). Paste it into a new message in Mail, Outlook or Gmail: timeline, links, progress, blockers and post-mortem come through formatted, the raw GitHub activity follows as small grey text.
+
 ### Stage-by-stage
 
 ```sh

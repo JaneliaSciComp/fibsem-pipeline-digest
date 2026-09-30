@@ -85,16 +85,22 @@ def inline_md(s: str) -> str:
     return re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2">\1</a>', s)
 
 
-def timeline(d: dict[str, Any], start: datetime) -> str:
-    """IM → ASM → REV → AP → DONE. Everything left of the current column and every
-    column ever entered is coloured; the current one is filled; first-entry date
-    below (bold if it happened this cycle)."""
+def stages(d: dict[str, Any]) -> list[tuple[str, str, str, datetime | None]]:
+    """(stage, short, state, first-entry date). Everything left of the current column and
+    every column ever entered is "reached"; the current one is "current"."""
     cur = COLUMNS.index(d["status"])
+    return [
+        (stage, short, "current" if i == cur else ("reached" if i < cur or stage in d["entered"] else ""), d["entered"].get(stage))
+        for i, (stage, short) in enumerate(STAGES)
+    ]
+
+
+def timeline(d: dict[str, Any], start: datetime) -> str:
+    """IM → ASM → REV → AP → DONE with the first-entry date below (bold if this cycle)."""
     out = []
-    for i, (stage, short) in enumerate(STAGES):
-        state = "current" if i == cur else ("reached" if i < cur or stage in d["entered"] else "")
+    for stage, short, state, date in stages(d):
         label = "&nbsp;"
-        if date := d["entered"].get(stage):
+        if date:
             label = fmt(date)
             if date > start:
                 label = f"<b>{label}</b>"
@@ -130,6 +136,11 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
         'fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="8" r="3.2" fill="currentColor"/></svg></a>'
         if d["preview"] else ""
     )
+    mail = (
+        '<button class="mail" type="button" title="copy this card for an email">'
+        '<svg viewBox="0 0 24 16" width="18" height="12"><rect x="1" y="1" width="22" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/>'
+        '<path d="M1 2l11 8 11-8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>'
+    )
     attn = '<span class="attn" title="needs attention">!</span>' if d["number"] in flagged else ""
     pm_html = ""
     if pm := digest.postmortem.get(d["number"]):
@@ -143,7 +154,7 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
 <details class="card {'done' if d['status'] == 'Done' else ''}" id="ds-{d['number']}">
   <summary>
     <header>
-      <h3>{attn}<a href="{esc(d['url'])}" target="_blank">{esc(d['title'])}</a> <small class="muted">#{d['number']}</small> {eye}{'<span class="newtag">new</span>' if d['new'] else ''}</h3>
+      <h3>{attn}<a href="{esc(d['url'])}" target="_blank">{esc(d['title'])}</a> <small class="muted">#{d['number']}</small> {eye}{mail}{'<span class="newtag">new</span>' if d['new'] else ''}</h3>
       {timeline(d, start)}
     </header>
     <div class="meta"><span><b>Owner</b> {esc(d['owner'])} · {esc(d['collab'])}</span><span><b>Assignee</b> {esc(', '.join(d['assignees']) or '—')}</span>
@@ -152,7 +163,67 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
   <div class="cols"><section><h4>Progress</h4><ul>{prog}</ul></section>{f'<section class="blockers"><h4>Open questions / blockers</h4><ul>{blk}</ul></section>' if blk else ''}</div>
   {pm_html}
   <details class="act-wrap"><summary>Activity ({len(d['in_window'])} comments · {who})</summary>{activity(d)}</details>
+  <template class="mail">{mail_card(d, digest, start, last)}</template>
 </details>"""
+
+
+# --------------------------------------------------------------------------- #
+# Email version of a card: tables and inline styles only, since mail clients drop
+# stylesheets, grid/flex and <details>. Raw activity is appended as small grey text.
+# --------------------------------------------------------------------------- #
+
+STAGE_COLOURS = {"Imaging": "#0ea5e9", "Assembly": "#8b5cf6", "Review": "#14b8a6", "Advanced Processing": "#f59e0b", "Done": "#22c55e"}
+_H4 = 'style="margin:12px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:{c}"'
+_UL = 'style="margin:0;padding-left:20px"'
+
+
+def _mail_timeline(d: dict[str, Any], start: datetime) -> str:
+    cells = []
+    for stage, short, state, date in stages(d):
+        c = STAGE_COLOURS[stage]
+        pill = "border:1.5px solid #d1d5db;color:#9ca3af"
+        if state == "reached":
+            pill = f"border:1.5px solid {c};color:{c}"
+        elif state == "current":
+            pill = f"border:1.5px solid {c};color:#fff;background:{c}"
+        label = "&nbsp;"
+        if date:
+            label = f'<b style="color:#2563eb">{fmt(date)}</b>' if date > start else fmt(date)
+        cells.append(
+            f'<td align="center" style="padding:0 2px;white-space:nowrap"><span style="display:inline-block;padding:1px 8px;border-radius:999px;'
+            f'font-weight:700;font-size:10px;{pill}">{short}</span><br><span style="color:#6b7280;font-size:10px">{label}</span></td>'
+        )
+    arrow = '<td style="color:#9ca3af;vertical-align:top;padding-top:1px">→</td>'
+    return f'<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:6px 0"><tr>{arrow.join(cells)}</tr></table>'
+
+
+def mail_card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime) -> str:
+    n = digest.datasets.get(d["number"])
+    sec = lambda t, items, c="#6b7280": f"<h4 {_H4.format(c=c)}>{t}</h4><ul {_UL}>{_bullets(items)}</ul>" if items else ""  # noqa: E731
+    body = sec("Progress", n.progress if n else []) or f'<p style="color:#6b7280">No progress reported.</p>'
+    body += sec("Open questions / blockers", n.blockers if n else [], "#b45309")
+    if pm := digest.postmortem.get(d["number"]):
+        body += sec("What went well", pm.well) + sec("What didn&#39;t", pm.bad) + sec("Takeaways / actions", pm.actions)
+    rows = "".join(
+        f'<tr><td style="white-space:nowrap;vertical-align:top;padding-right:8px">{c["createdAt"][:10]}</td>'
+        f'<td style="white-space:nowrap;vertical-align:top;padding-right:8px">{esc((c.get("author") or {}).get("login", "?"))}</td>'
+        f'<td>{esc(clean_text(c["body"] or "")[:400])}</td></tr>'
+        for c in d["in_window"]
+    )
+    links = f'<a href="{esc(d["url"])}" style="color:#2563eb">GitHub issue #{d["number"]}</a>'
+    if d["preview"]:
+        links += f' · <a href="{esc(d["preview"])}" style="color:#2563eb">imaging preview</a>'
+    return f"""<div style="font:14px/1.45 -apple-system,Helvetica,Arial,sans-serif;color:#1c1c1c;max-width:640px">
+<h2 style="margin:0;font-size:17px">{esc(d['title'])} <span style="color:#6b7280;font-weight:400;font-size:13px">#{d['number']}</span></h2>
+{_mail_timeline(d, start)}
+<p style="margin:4px 0;font-size:13px;color:#374151"><span style="color:#6b7280">Status</span> {esc(d['status'])} ·
+<span style="color:#6b7280">Owner</span> {esc(d['owner'])} · {esc(d['collab'])} · <span style="color:#6b7280">Assignee</span> {esc(', '.join(d['assignees']) or '—')} ·
+<span style="color:#6b7280">Last activity</span> {fmt(d['last_activity'])} ({(last - d['last_activity']).days}d ago)</p>
+<p style="margin:4px 0;font-size:13px">{links}</p>
+{body}
+<p style="margin:16px 0 4px;padding-top:6px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">Raw GitHub activity ({len(d['in_window'])} comments, {fmt(start)} → {fmt(last)})</p>
+<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px;color:#9ca3af">{rows}</table>
+</div>"""
 
 
 def board(ds: list[dict[str, Any]], flagged: set[int]) -> str:
@@ -209,7 +280,8 @@ h2 .tools{margin-left:auto;font-size:.75em;font-weight:400}h2 .tools button{font
 .card header{display:flex;align-items:center;gap:1em;flex-wrap:wrap}
 .card h3{margin:0;font-size:1.05em;flex:1;min-width:16em;display:flex;align-items:center;gap:.4em}
 .attn{display:inline-block;width:1.25em;height:1.25em;border-radius:50%;background:var(--warn);color:#fff;text-align:center;font-weight:700;font-size:.75em;line-height:1.25em}
-.eye{color:#9ca3af;display:inline-flex;align-items:center}.eye:hover{color:var(--accent)}
+.eye,.mail{color:#9ca3af;display:inline-flex;align-items:center}.eye:hover,.mail:hover{color:var(--accent)}
+.mail{background:none;border:0;padding:0;cursor:pointer}.mail.ok{color:#16a34a}
 .newtag{font-size:.7em;font-weight:400;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:0 .5em}
 .tl{display:flex;align-items:flex-start;gap:.15em;font-size:.72em}
 .stage{display:flex;flex-direction:column;align-items:center;width:4.6em}
@@ -237,6 +309,15 @@ const set=o=>document.querySelectorAll('.card').forEach(d=>d.open=o);
 document.getElementById('exp').onclick=()=>set(true);document.getElementById('col').onclick=()=>set(false);
 const openHash=()=>{const t=document.querySelector(location.hash||'#none');if(t&&t.classList.contains('card'))t.open=true};
 addEventListener('hashchange',openHash);openHash();
+document.querySelectorAll('button.mail').forEach(b=>b.onclick=async e=>{
+  e.preventDefault();
+  const html=b.closest('.card').querySelector('template.mail').innerHTML;
+  const tmp=document.body.appendChild(document.createElement('div'));tmp.innerHTML=html;const text=tmp.innerText;tmp.remove();
+  try{
+    await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}),'text/plain':new Blob([text],{type:'text/plain'})})]);
+    b.classList.add('ok');setTimeout(()=>b.classList.remove('ok'),1500);
+  }catch(err){alert('Copy failed: '+err)}
+});
 """
 
 
