@@ -163,18 +163,16 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
   <div class="cols"><section><h4>Progress</h4><ul>{prog}</ul></section>{f'<section class="blockers"><h4>Open questions / blockers</h4><ul>{blk}</ul></section>' if blk else ''}</div>
   {pm_html}
   <details class="act-wrap"><summary>Activity ({len(d['in_window'])} comments · {who})</summary>{activity(d)}</details>
-  <template class="mail">{mail_card(d, digest, start, last)}</template>
+  <template class="mail">{mail_card(d, start, last)}</template><template class="mail-text">{esc(mail_text(d, digest, start, last))}</template>
 </details>"""
 
 
 # --------------------------------------------------------------------------- #
-# Email version of a card, rasterised to PNG in the browser (see JS). Inline styles only
-# so the SVG foreignObject renders it standalone. Raw activity is appended as small grey text.
+# E-mail version of a card: the collapsed header (title, timeline, owner line) is
+# rasterised to PNG in the browser (see JS), everything else is copied as plain text.
 # --------------------------------------------------------------------------- #
 
 STAGE_COLOURS = {"Imaging": "#0ea5e9", "Assembly": "#8b5cf6", "Review": "#14b8a6", "Advanced Processing": "#f59e0b", "Done": "#22c55e"}
-_H4 = 'style="margin:12px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:{c}"'
-_UL = 'style="margin:0;padding-left:20px"'
 
 
 def _mail_timeline(d: dict[str, Any], start: datetime) -> str:
@@ -197,31 +195,30 @@ def _mail_timeline(d: dict[str, Any], start: datetime) -> str:
     return f'<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:6px 0"><tr>{arrow.join(cells)}</tr></table>'
 
 
-def mail_card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime) -> str:
-    n = digest.datasets.get(d["number"])
-    sec = lambda t, items, c="#6b7280": f"<h4 {_H4.format(c=c)}>{t}</h4><ul {_UL}>{_bullets(items)}</ul>" if items else ""  # noqa: E731
-    body = sec("Progress", n.progress if n else []) or f'<p style="color:#6b7280">No progress reported.</p>'
-    body += sec("Open questions / blockers", n.blockers if n else [], "#b45309")
-    if pm := digest.postmortem.get(d["number"]):
-        body += sec("What went well", pm.well) + sec("What didn&#39;t", pm.bad) + sec("Takeaways / actions", pm.actions)
-    rows = "".join(
-        f'<tr><td style="white-space:nowrap;vertical-align:top;padding-right:8px">{c["createdAt"][:10]}</td>'
-        f'<td style="white-space:nowrap;vertical-align:top;padding-right:8px">{esc((c.get("author") or {}).get("login", "?"))}</td>'
-        f'<td>{esc(clean_text(c["body"] or "")[:400])}</td></tr>'
-        for c in d["in_window"]
-    )
-    links = f'<span style="color:#2563eb">{esc(d["url"].removeprefix("https://"))}</span>'
+def mail_card(d: dict[str, Any], start: datetime, last: datetime) -> str:
+    """Inline styles only, so the SVG foreignObject renders it standalone."""
     return f"""<div style="font:14px/1.45 Helvetica,Arial,sans-serif;color:#1c1c1c;width:640px">
 <h2 style="margin:0;font-size:17px">{esc(d['title'])} <span style="color:#6b7280;font-weight:400;font-size:13px">#{d['number']}</span></h2>
 {_mail_timeline(d, start)}
-<p style="margin:4px 0;font-size:13px;color:#374151"><span style="color:#6b7280">Status</span> {esc(d['status'])} ·
+<p style="margin:4px 0 0;font-size:13px;color:#374151"><span style="color:#6b7280">Status</span> {esc(d['status'])} ·
 <span style="color:#6b7280">Owner</span> {esc(d['owner'])} · {esc(d['collab'])} · <span style="color:#6b7280">Assignee</span> {esc(', '.join(d['assignees']) or '—')} ·
 <span style="color:#6b7280">Last activity</span> {fmt(d['last_activity'])} ({(last - d['last_activity']).days}d ago)</p>
-<p style="margin:4px 0;font-size:13px">{links}</p>
-{body}
-<p style="margin:16px 0 4px;padding-top:6px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">Raw GitHub activity ({len(d['in_window'])} comments, {fmt(start)} → {fmt(last)})</p>
-<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px;color:#9ca3af">{rows}</table>
 </div>"""
+
+
+def mail_text(d: dict[str, Any], digest: Digest, start: datetime, last: datetime) -> str:
+    n = digest.datasets.get(d["number"])
+    sec = lambda t, items: [t.upper()] + [f"- {i.replace('**', '')}" for i in items] + [""] if items else []  # noqa: E731
+    lines = [f"Issue: {d['url']}"] + ([f"Preview: {d['preview']}"] if d["preview"] else []) + [""]
+    lines += sec("Progress", n.progress if n else []) or ["No progress reported.", ""]
+    lines += sec("Open questions / blockers", n.blockers if n else [])
+    if pm := digest.postmortem.get(d["number"]):
+        lines += sec("What went well", pm.well) + sec("What didn't", pm.bad) + sec("Takeaways / actions", pm.actions)
+    lines += [f"Raw GitHub activity ({len(d['in_window'])} comments, {fmt(start)} → {fmt(last)})"]
+    for c in d["in_window"]:
+        author = (c.get("author") or {}).get("login", "?")
+        lines.append(f"{c['createdAt'][:10]}  {author}: {clean_text(c['body'] or '')[:400]}")
+    return "\n".join(lines)
 
 
 def board(ds: list[dict[str, Any]], flagged: set[int]) -> str:
@@ -318,10 +315,10 @@ const toPng=async html=>{
 };
 document.querySelectorAll('button.mail').forEach(b=>b.onclick=async e=>{
   e.preventDefault();
-  const html=b.closest('.card').querySelector('template.mail').innerHTML;
+  const card=b.closest('.card');
   try{
-    if(e.shiftKey){const tmp=document.body.appendChild(document.createElement('div'));tmp.innerHTML=html;const text=tmp.innerText;tmp.remove();await navigator.clipboard.writeText(text)}
-    else await navigator.clipboard.write([new ClipboardItem({'image/png':toPng(html)})]);
+    if(e.shiftKey)await navigator.clipboard.writeText(card.querySelector('template.mail-text').content.textContent);
+    else await navigator.clipboard.write([new ClipboardItem({'image/png':toPng(card.querySelector('template.mail').innerHTML)})]);
     b.classList.add('ok');setTimeout(()=>b.classList.remove('ok'),1500);
   }catch(err){alert('Copy failed: '+err)}
 });

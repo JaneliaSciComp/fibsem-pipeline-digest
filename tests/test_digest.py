@@ -140,14 +140,17 @@ def test_render():
     assert "signed off, see state and [link]" in html and "http://ng/1" not in html and "http://ng/2" not in html
     assert html.index("ds-9") < html.index("ds-7") < html.index("ds-8"), "sorted by column"
     assert "footer" not in html
-    # Email copy: one template per card, inline-styled, no page CSS classes, links kept, activity greyed.
+    # E-mail copy: collapsed header as an inline-styled template (rasterised in the browser),
+    # links + bullets + activity as a plain-text template.
     mail = html.split('<template class="mail">')[1:]
-    assert len(mail) == 3
+    assert len(mail) == 3 and html.count('<button class="mail"') == 3
     m7 = next(m for m in mail if "#7</span>" in m).split("</template>")[0]
-    assert 'class="' not in m7
+    assert 'class="' not in m7 and "b1" not in m7, "image part is header only"
     assert 'background:#8b5cf6">ASM' in m7 and 'color:#14b8a6">REV' in m7, "email timeline: current filled, reached outlined"
-    assert "x/7</span>" in m7 and "http://ng/7" not in m7 and "b1" in m7 and "Raw GitHub activity" in m7
-    assert html.count('<button class="mail"') == 3
+    t7 = next(m.split('<template class="mail-text">')[1].split("</template>")[0] for m in mail if "#7</span>" in m)
+    assert t7.startswith("Issue: https://x/7\nPreview: http://ng/7\n\nPROGRESS\n- p1\n\nOPEN QUESTIONS / BLOCKERS\n- b1\n\nRaw GitHub activity (0 comments")
+    t8 = next(m.split('<template class="mail-text">')[1].split("</template>")[0] for m in mail if "#8</span>" in m)
+    assert "WHAT WENT WELL\n- w\n" in t8 and "2026-09-11  bob: signed off, see state and [link]" in t8
 
 
 def test_cli_render():
