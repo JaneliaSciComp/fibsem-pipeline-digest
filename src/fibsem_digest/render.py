@@ -137,7 +137,7 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
         if d["preview"] else ""
     )
     mail = (
-        '<button class="mail" type="button" title="copy this card as an image for an e-mail (shift-click: plain text)">'
+        '<button class="mail" type="button" title="copy for an e-mail: click = summary text, shift-click = card image, alt-click = raw activity">'
         '<svg viewBox="0 0 24 16" width="18" height="12"><rect x="1" y="1" width="22" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/>'
         '<path d="M1 2l11 8 11-8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>'
     )
@@ -163,13 +163,14 @@ def card(d: dict[str, Any], digest: Digest, start: datetime, last: datetime, fla
   <div class="cols"><section><h4>Progress</h4><ul>{prog}</ul></section>{f'<section class="blockers"><h4>Open questions / blockers</h4><ul>{blk}</ul></section>' if blk else ''}</div>
   {pm_html}
   <details class="act-wrap"><summary>Activity ({len(d['in_window'])} comments · {who})</summary>{activity(d)}</details>
-  <template class="mail">{mail_card(d, start, last)}</template><template class="mail-text">{esc(mail_text(d, digest, start, last))}</template>
+  <template class="mail">{mail_card(d, start, last)}</template><template class="mail-text">{esc(mail_text(d, digest))}</template><template class="mail-act">{esc(mail_activity(d, start, last))}</template>
 </details>"""
 
 
 # --------------------------------------------------------------------------- #
 # E-mail version of a card: the collapsed header (title, timeline, owner line) is
-# rasterised to PNG in the browser (see JS), everything else is copied as plain text.
+# rasterised to PNG in the browser (see JS); links + bullets and the raw activity are
+# separate plain-text templates. Click / shift-click / alt-click, see the button title.
 # --------------------------------------------------------------------------- #
 
 STAGE_COLOURS = {"Imaging": "#0ea5e9", "Assembly": "#8b5cf6", "Review": "#14b8a6", "Advanced Processing": "#f59e0b", "Done": "#22c55e"}
@@ -206,7 +207,7 @@ def mail_card(d: dict[str, Any], start: datetime, last: datetime) -> str:
 </div>"""
 
 
-def mail_text(d: dict[str, Any], digest: Digest, start: datetime, last: datetime) -> str:
+def mail_text(d: dict[str, Any], digest: Digest) -> str:
     n = digest.datasets.get(d["number"])
     sec = lambda t, items: [t.upper()] + [f"- {i.replace('**', '')}" for i in items] + [""] if items else []  # noqa: E731
     lines = [f"Issue: {d['url']}"] + ([f"Preview: {d['preview']}"] if d["preview"] else []) + [""]
@@ -214,7 +215,11 @@ def mail_text(d: dict[str, Any], digest: Digest, start: datetime, last: datetime
     lines += sec("Open questions / blockers", n.blockers if n else [])
     if pm := digest.postmortem.get(d["number"]):
         lines += sec("What went well", pm.well) + sec("What didn't", pm.bad) + sec("Takeaways / actions", pm.actions)
-    lines += [f"Raw GitHub activity ({len(d['in_window'])} comments, {fmt(start)} → {fmt(last)})"]
+    return "\n".join(lines).rstrip()
+
+
+def mail_activity(d: dict[str, Any], start: datetime, last: datetime) -> str:
+    lines = [f"Raw GitHub activity ({len(d['in_window'])} comments, {fmt(start)} → {fmt(last)})"]
     for c in d["in_window"]:
         author = (c.get("author") or {}).get("login", "?")
         lines.append(f"{c['createdAt'][:10]}  {author}: {clean_text(c['body'] or '')[:400]}")
@@ -317,8 +322,8 @@ document.querySelectorAll('button.mail').forEach(b=>b.onclick=async e=>{
   e.preventDefault();
   const card=b.closest('.card');
   try{
-    if(e.shiftKey)await navigator.clipboard.writeText(card.querySelector('template.mail-text').content.textContent);
-    else await navigator.clipboard.write([new ClipboardItem({'image/png':toPng(card.querySelector('template.mail').innerHTML)})]);
+    if(e.shiftKey)await navigator.clipboard.write([new ClipboardItem({'image/png':toPng(card.querySelector('template.mail').innerHTML)})]);
+    else await navigator.clipboard.writeText(card.querySelector(e.altKey?'template.mail-act':'template.mail-text').content.textContent);
     b.classList.add('ok');setTimeout(()=>b.classList.remove('ok'),1500);
   }catch(err){alert('Copy failed: '+err)}
 });

@@ -148,9 +148,11 @@ def test_render():
     assert 'class="' not in m7 and "b1" not in m7, "image part is header only"
     assert 'background:#8b5cf6">ASM' in m7 and 'color:#14b8a6">REV' in m7, "email timeline: current filled, reached outlined"
     t7 = next(m.split('<template class="mail-text">')[1].split("</template>")[0] for m in mail if "#7</span>" in m)
-    assert t7.startswith("Issue: https://x/7\nPreview: http://ng/7\n\nPROGRESS\n- p1\n\nOPEN QUESTIONS / BLOCKERS\n- b1\n\nRaw GitHub activity (0 comments")
-    t8 = next(m.split('<template class="mail-text">')[1].split("</template>")[0] for m in mail if "#8</span>" in m)
-    assert "WHAT WENT WELL\n- w\n" in t8 and "2026-09-11  bob: signed off, see state and [link]" in t8
+    assert t7 == "Issue: https://x/7\nPreview: http://ng/7\n\nPROGRESS\n- p1\n\nOPEN QUESTIONS / BLOCKERS\n- b1"
+    m8 = next(m for m in mail if "#8</span>" in m)
+    assert "WHAT WENT WELL\n- w\n" in m8.split('<template class="mail-text">')[1].split("</template>")[0]
+    a8 = m8.split('<template class="mail-act">')[1].split("</template>")[0]
+    assert a8 == "Raw GitHub activity (1 comments, Sep 1 → Sep 16)\n2026-09-11  bob: signed off, see state and [link]"
 
 
 def test_cli_render():
