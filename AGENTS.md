@@ -2,6 +2,10 @@
 
 Setup, usage and the `board.json` format are in [README.md](README.md). This file covers what you need to change the code.
 
+## Workflow
+
+Changes go through pull requests: branch off `main`, open a PR, and don't push to `main` directly. Every PR is reviewed by the codeowner (see `.github/CODEOWNERS`) before merging.
+
 ## Rules of thumb
 
 - **Only `digest.py` calls `claude`.** `fetch`, `render`, the CLI and the tests never do, so layout work (`render`) and fetching cost no API calls.
